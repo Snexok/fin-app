@@ -1,14 +1,10 @@
 # Можно? | Заявка Sber500xDisrupt
 
-## Быстрый старт и навигация
+## Презентация
 
-Основная презентация: 8 слайдов с иллюстрациями на весь экран и историей покупки наушников. Откройте [PDF](output/trailer-cinema/mozhno-cinema.pdf), [редактируемый PowerPoint](output/trailer-cinema/mozhno-cinema.pptx) или [обзор всех слайдов](output/trailer-cinema/overview.png). Навигация по материалам: [START-HERE.md](START-HERE.md). Проверка: `./scripts/story.sh check-cinema`; локальная пересборка: `./scripts/story.sh cinema`.
+[Смотреть PDF](presentation.pdf) · [Редактировать PowerPoint](presentation.pptx)
 
-Инструкции по воспроизводимой сборке находятся в [docs/presentation-build.md](docs/presentation-build.md). Исходник новой презентации: [scripts/build-cinema.mjs](scripts/build-cinema.mjs), иллюстрации и промпты: [output/trailer-cinema/assets/](output/trailer-cinema/assets/). Сценарий трейлера и раскадровка: [entertainment-playbook.md](output/trailer/entertainment-playbook.md) и [storyboard.png](output/trailer/storyboard.png).
-
-Прежняя презентация из 11 слайдов сохранена: [PDF](output/trailer/mozhno-story.pdf), [PowerPoint](output/trailer/mozhno-story-final.pptx), [исходник](scripts/build-story.mjs). Отдельный исследовательский пакет из 16 слайдов: [описание исследования](research/README.md) и [PowerPoint](output/mozhno-research-playbook.pptx).
-
-Полный текст, полученный от пользователя 12 сентября 2026 года, сохранен без изменений: [sber500_codex_handoff.md](sber500_codex_handoff.md). Этот README содержит краткий рабочий контекст.
+Восемь слайдов с историей покупки наушников и иллюстрациями на весь экран. Финансовые суммы приведены для примера. Продукт находится на стадии концепта.
 
 Контекст предоставлен пользователем для подготовки заявки. Факты о прошлом опыте не дополнены внешними сведениями. Этапы, функции MVP и целевые показатели ниже являются планами, если прямо не указано иное.
 
@@ -154,7 +150,7 @@ LLM планируется использовать для разговорно�
 - Телефон: [НУЖНО УТОЧНИТЬ].
 - Город: [НУЖНО УТОЧНИТЬ].
 - GitHub каждого участника: [НУЖНО УТОЧНИТЬ].
-- Ссылка на презентацию: [PDF в репозитории](https://github.com/Snexok/fin-app/blob/overview/output/trailer-cinema/mozhno-cinema.pdf).
+- Ссылка на презентацию: [PDF в репозитории](https://github.com/Snexok/fin-app/blob/overview/presentation.pdf).
 - Точный источник, откуда узнали о программе: [НУЖНО УТОЧНИТЬ].
 - Точные бюджеты продвижения и возможность их раскрывать: [НУЖНО УТОЧНИТЬ].
 - Точные результаты рекламных кампаний: [НУЖНО УТОЧНИТЬ].

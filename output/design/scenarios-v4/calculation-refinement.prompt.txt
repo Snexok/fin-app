@@ -1,6 +1,0 @@
-Use case: precise-object-edit / UI text refinement. Image 1 is an already finished screen. Preserve its entire composition, every value, every other Russian label, all card sizes and positions, typography, background, colors, glass materials, buttons and icons, except the two changes below.
-
-1. Replace the top page title "Показать расчёт" with "Расчёт плана". Keep the same font, weight, size, left alignment, circular back button and "Демо-данные" subtitle. Do not enlarge the shorter title.
-2. In the small decorative glass document illustration at the right of the pale mint intro card, remove ONLY the circular checkmark seal overlay. Keep the glass document itself with its three horizontal grooves. This is an unfinished setup state, so a completed checkmark should not be shown.
-
-Nothing else changes. In particular preserve "Сначала уточним план", "Настройка не завершена", the four editable rows and "Продолжить настройку", as well as the 1 200 ₽ internet-payment line. Keep the portrait 9:16 full-bleed output, identical visual fidelity and refined emerald-glass atmosphere.
