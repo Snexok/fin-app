@@ -1,6 +1,8 @@
 # Можно?
 
-Основная презентация о покупке наушников: [PDF](trailer/mozhno-story.pdf), [PowerPoint с заметками](trailer/mozhno-story-final.pptx), [вход и сборка](../START-HERE.md).
+Основная презентация о покупке наушников: [PDF](trailer-cinema/mozhno-cinema.pdf), [PowerPoint с заметками](trailer-cinema/mozhno-cinema.pptx), [обзор слайдов](trailer-cinema/overview.png), [вход и сборка](../START-HERE.md).
+
+Прежняя версия из 11 слайдов: [PDF](trailer/mozhno-story.pdf), [PowerPoint](trailer/mozhno-story-final.pptx).
 
 Откройте index.html для просмотра прежнего исследовательского пакета.
 

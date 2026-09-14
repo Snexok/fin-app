@@ -2,9 +2,11 @@
 
 ## Быстрый старт и навигация
 
-Для утвержденной story-презентации начните с [START-HERE.md](START-HERE.md). Канонические файлы находятся в [output/trailer/mozhno-story.pdf](output/trailer/mozhno-story.pdf) и [output/trailer/mozhno-story-final.pptx](output/trailer/mozhno-story-final.pptx). Проверка артефакта: `./scripts/story.sh check`; локальная пересборка: `./scripts/story.sh build`.
+Основная презентация: 8 слайдов с иллюстрациями на весь экран и историей покупки наушников. Откройте [PDF](output/trailer-cinema/mozhno-cinema.pdf), [редактируемый PowerPoint](output/trailer-cinema/mozhno-cinema.pptx) или [обзор всех слайдов](output/trailer-cinema/overview.png). Навигация по материалам: [START-HERE.md](START-HERE.md). Проверка: `./scripts/story.sh check-cinema`; локальная пересборка: `./scripts/story.sh cinema`.
 
-Инструкции по воспроизводимой сборке находятся в [docs/presentation-build.md](docs/presentation-build.md). Исходник сценария и сборки: [scripts/build-story.mjs](scripts/build-story.mjs); раскадровка и материалы: [output/trailer/storyboard.png](output/trailer/storyboard.png), [output/assets/09-engine.png](output/assets/09-engine.png) и [output/trailer/entertainment-playbook.md](output/trailer/entertainment-playbook.md). Отдельный исследовательский пакет описан в [research/README.md](research/README.md); его не следует смешивать со story-презентацией.
+Инструкции по воспроизводимой сборке находятся в [docs/presentation-build.md](docs/presentation-build.md). Исходник новой презентации: [scripts/build-cinema.mjs](scripts/build-cinema.mjs), иллюстрации и промпты: [output/trailer-cinema/assets/](output/trailer-cinema/assets/). Сценарий трейлера и раскадровка: [entertainment-playbook.md](output/trailer/entertainment-playbook.md) и [storyboard.png](output/trailer/storyboard.png).
+
+Прежняя презентация из 11 слайдов сохранена: [PDF](output/trailer/mozhno-story.pdf), [PowerPoint](output/trailer/mozhno-story-final.pptx), [исходник](scripts/build-story.mjs). Отдельный исследовательский пакет из 16 слайдов: [описание исследования](research/README.md) и [PowerPoint](output/mozhno-research-playbook.pptx).
 
 Полный текст, полученный от пользователя 12 сентября 2026 года, сохранен без изменений: [sber500_codex_handoff.md](sber500_codex_handoff.md). Этот README содержит краткий рабочий контекст.
 
@@ -152,7 +154,7 @@ LLM планируется использовать для разговорно�
 - Телефон: [НУЖНО УТОЧНИТЬ].
 - Город: [НУЖНО УТОЧНИТЬ].
 - GitHub каждого участника: [НУЖНО УТОЧНИТЬ].
-- Ссылка на презентацию: [НУЖНО УТОЧНИТЬ].
+- Ссылка на презентацию: [PDF в репозитории](https://github.com/Snexok/fin-app/blob/overview/output/trailer-cinema/mozhno-cinema.pdf).
 - Точный источник, откуда узнали о программе: [НУЖНО УТОЧНИТЬ].
 - Точные бюджеты продвижения и возможность их раскрывать: [НУЖНО УТОЧНИТЬ].
 - Точные результаты рекламных кампаний: [НУЖНО УТОЧНИТЬ].

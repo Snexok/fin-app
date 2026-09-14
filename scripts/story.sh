@@ -11,9 +11,9 @@ export RUNTIME_NODE_MODULES="$STORY_RUNTIME_DIR/node/node_modules"
 export RUNTIME_PYTHON="$story_python"
 
 case "${1:-help}" in
-  build|check) ;;
+  build|check|cinema|check-cinema) ;;
   *)
-    echo 'Usage: ./scripts/story.sh build | check [artifact-directory]'
+    echo 'Usage: ./scripts/story.sh build | cinema | check [artifact-directory] | check-cinema [artifact-directory]'
     echo 'build creates a private copy in .build; check reads the approved export by default.'
     exit 0 ;;
 esac
@@ -24,7 +24,12 @@ for dependency in "$story_node" "$story_python" "$STORY_SKILL_DIR/container_tool
   fi
 done
 
-if [[ "$1" == build ]]; then
+if [[ "$1" == cinema ]]; then
+  if [[ $# -ne 1 ]]; then echo 'cinema does not take an output directory.' >&2; exit 1; fi
+  "$story_node" "$project_root/scripts/build-cinema.mjs"
+elif [[ "$1" == check-cinema ]]; then
+  "$story_python" "$project_root/scripts/check-cinema.py" "${2:-$project_root/output/trailer-cinema}"
+elif [[ "$1" == build ]]; then
   if [[ $# -ne 1 ]]; then echo 'build does not take an output directory.' >&2; exit 1; fi
   "$story_node" "$project_root/scripts/build-story.mjs"
 else
