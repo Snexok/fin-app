@@ -1,0 +1,204 @@
+{
+  "as_of": "2026-09-12",
+  "scope": "Действующие продукты personal finance; только официальные источники. Price содержит только проверяемые публичные условия. Scale всегда содержит отдельный тип метрики, а не оценку DAU.",
+  "entries": [
+    {
+      "id": "cleo",
+      "name": "Cleo",
+      "region": "США: Cleo не взаимодействует с иностранными банками за пределами США; правила 2026 допускают к промо пользователей-резидентов США.",
+      "category": "AI financial coaching, заявленный safe-to-spend, debt/credit, cash advance",
+      "overlap": "Autopilot заявлен как расчет безопасной суммы на день по доходу, счетам, целям и фактическим тратам.",
+      "difference": "FAQ от 2026-03-10 приглашает в Autopilot waitlist; доступность для всех и фактическая работа функции не проверялись. Ценовая страница объединяет Autopilot с cash advance, кредитными и сберегательными функциями.",
+      "price": "Plus $5.99/месяц; Pro $8.99/месяц; Builder $14.99/месяц. Express fee $4.49-$14.99 при применимости.",
+      "scale": {"metric_type": "не опубликовано", "value": null, "date": null},
+      "source_urls": ["https://web.meetcleo.com/faqs/en/articles/13727802-what-is-autopilot", "https://web.meetcleo.com/faqs/en/articles/8124868-what-can-t-cleo-do", "https://web.meetcleo.com/pricing"]
+    },
+    {
+      "id": "pocketguard",
+      "name": "PocketGuard",
+      "region": "США, Канада, Великобритания: заявлена синхронизация с 20 000+ учреждениями в этих странах.",
+      "category": "budgeting, safe-to-spend, cash flow",
+      "overlap": "Leftover/safe-to-spend после счетов, долгов, накоплений и целей.",
+      "difference": "Начинает с bank sync и полного budgeting; Можно? планируется без bank sync в MVP и с вопросом о конкретной покупке как первой точкой входа.",
+      "price": "Premium: $74.99/год ($6.25/месяц при годовой оплате), $12.99/месяц или $149.99 lifetime; 7 дней trial.",
+      "scale": {"metric_type": "заявленный результат пользователей, не аудитория", "value": "$20m+ lowered bills; $680m+ saved; $43m+ debt paid off", "date": "дата на странице не названа; проверено 2026-09-12"},
+      "source_urls": ["https://pocketguard.com/", "https://pocketguard.com/pricing/", "https://pocketguard.com/what-is-pocketguard/"]
+    },
+    {
+      "id": "ynab",
+      "name": "YNAB",
+      "region": "Северная Америка и 18 стран Европы для Direct Import; страны перечислены официальной поддержкой.",
+      "category": "zero-based budgeting, goals, debt planning",
+      "overlap": "Планирование денег до траты, цели и определение доступных средств.",
+      "difference": "Требует регулярного распределения денег по категориям, а не отвечает прежде всего на единичный вопрос о покупке.",
+      "price": "$109/год ($9.08/месяц при годовой оплате) или $14.99/месяц; trial 34 дня.",
+      "scale": {"metric_type": "результаты survey, не размер аудитории", "value": "91% respondents say YNAB changed how they think about money", "date": "2025 survey responses"},
+      "source_urls": ["https://www.ynab.com/pricing/", "https://support.ynab.com/en_us/direct-import-in-europe-Syae1z_A9"]
+    },
+    {
+      "id": "monarch_money",
+      "name": "Monarch Money",
+      "region": "США и Канада: официальная download page указывает доступность web/iPhone/iPad/Android в обеих странах.",
+      "category": "household personal finance dashboard, budgeting, cash flow",
+      "overlap": "Бюджет, cash flow, цели и анализ финансов семьи.",
+      "difference": "Полный финансовый dashboard с инвестициями и household collaboration, а не узкий момент выбора покупки.",
+      "price": "$99.99/год ($8.33/месяц при годовой оплате).",
+      "scale": {"metric_type": "отзывы", "value": "60,000+ reviews; 4.9", "date": "дата заявления не названа; проверено 2026-09-12"},
+      "source_urls": ["https://partners.monarchmoney.com/pricing", "https://help.monarchmoney.com/hc/en-us/articles/360048883631-Budget"]
+    },
+    {
+      "id": "copilot_money",
+      "name": "Copilot Money",
+      "region": "США: 10 000+ US financial institutions; US-based accounts only.",
+      "category": "personal finance dashboard, budgeting, conversational data assistant",
+      "overlap": "Автокатегоризация, cash flow, upcoming bills и вопросы к собственным финансовым данным через Money Assistant beta.",
+      "difference": "Опирается на подключенные счета и не заявляет специализированный deterministic pre-purchase decision flow.",
+      "price": "$95/год ($7.92/месяц) или $13/месяц; trial 1 месяц.",
+      "scale": {"metric_type": "отзывы App Store", "value": "29,000+ reviews; rating 4.8", "date": "проверено 2026-09-12"},
+      "source_urls": ["https://www.copilot.money/", "https://www.copilot.money/faq"]
+    },
+    {
+      "id": "quicken_simplifi",
+      "name": "Quicken Simplifi",
+      "region": "США и Канада: продукт доступен и поддерживает банковские подключения обеих стран; поддерживает USD и CAD, по одной валюте за раз.",
+      "category": "predictive budgeting and projected cash flow",
+      "overlap": "Spending Plan считает Left This Month; Projected Cash Flow строит будущие балансы по доходам, счетам, подпискам и будущим операциям.",
+      "difference": "Более широкий personal-finance suite и горизонт планирования до 12 месяцев вместо Telegram-вопроса перед покупкой.",
+      "price": "$3.99/месяц при годовой оплате; на странице зачеркнута обычная цена $6.99/месяц.",
+      "scale": {"metric_type": "infrastructure coverage", "value": "14,000+ financial institutions", "date": "2026-07-14"},
+      "source_urls": ["https://support.simplifi.quicken.com/en/articles/3363727-quicken-simplifi-subscription-questions", "https://www.quicken.com/products/simplifi/", "https://www.quicken.com/products/pricing-comparison/", "https://support.simplifi.quicken.com/en/articles/4212702-understanding-your-spending-plan", "https://support.simplifi.quicken.com/en/articles/3357429-using-projected-cash-flow"]
+    },
+    {
+      "id": "emma",
+      "name": "Emma",
+      "region": "Великобритания, США, Канада.",
+      "category": "open-banking financial management, budgeting, subscriptions",
+      "overlap": "Бюджет, счета/подписки и остаток до конца месяца.",
+      "difference": "Super-app с open banking, savings/investments and credit products, а не узкий assistant before purchase.",
+      "price": "Basic free; Plus/Pro/Ultimate и 7-day trial. Числовые цены на просмотренной публичной странице не показаны.",
+      "scale": {"metric_type": "разные показатели", "value": "3,000,000+ happy customers; 4m+ downloads; 20k+ reviews", "date": "дата заявления не названа; проверено 2026-09-12"},
+      "source_urls": ["https://emma-app.com/", "https://emma-app.com/emma-reviews"]
+    },
+    {
+      "id": "snoop",
+      "name": "Snoop",
+      "region": "Великобритания: UK banks, FCA registration.",
+      "category": "open-banking money management, bill optimization",
+      "overlap": "Pay-cycle budgeting, предупреждения о тратах и риск того, что будущий счет не покрыт.",
+      "difference": "Монетизация также через switching deals; основной пользовательский путь - агрегатор счетов и экономия на bills.",
+      "price": "Free; Snoop Plus £5.99/месяц или £47.99/год.",
+      "scale": {"metric_type": "не опубликовано", "value": null, "date": null},
+      "source_urls": ["https://www.snoop.app/", "https://snoop.app/plus/"]
+    },
+    {
+      "id": "plum",
+      "name": "Plum",
+      "region": "Великобритания и ЕС.",
+      "category": "automated saving, investing, spending tracker",
+      "overlap": "Накопления, цели, spend tracker и автоматизация распределения денег.",
+      "difference": "Делает деньги рабочими через автоматические saving/investment rules; не нейтральный ответ о допустимости одной покупки.",
+      "price": "UK: Basic free, Plus £3.99, Boost £7.99, Max £14.99. EU: Basic free, Pro €2.00, Boost €7.99, Premium €9.99. Период новых UK цен в справке не указан.",
+      "scale": {"metric_type": "people and money set aside", "value": "1.8m+ people; €2bn+ set aside", "date": "2023-11-17"},
+      "source_urls": ["https://help.withplum.com/en/articles/8711801-what-is-a-plum-subscription", "https://help.withplum.com/en/articles/9799618-spend-tracker", "https://blog.withplum.com/en-ie/how-does-the-plum-app-work/"]
+    },
+    {
+      "id": "buddy",
+      "name": "Buddy",
+      "region": "Швеция: Buddy Budgeting AB, Stockholm. Сайт отдельно позиционирует продукт в Канаде и Австралии.",
+      "category": "shared budgeting, expense tracking",
+      "overlap": "Бюджеты, остаток к трате, счета, net worth и совместное ведение расходов.",
+      "difference": "Категориальный budget tracker; отдельный cash-flow прогноз до следующего дохода в просмотренных источниках не заявлен.",
+      "price": "Free to try; числовая цена не приводится, поскольку она зависит от региона и публичный сайт не публикует единую цену.",
+      "scale": {"metric_type": "users", "value": "over 3m users", "date": "дата заявления не названа; проверено 2026-09-12"},
+      "source_urls": ["https://buddy.download/", "https://buddy.download/terms-and-conditions/"]
+    },
+    {
+      "id": "wallet_budgetbakers",
+      "name": "Wallet by BudgetBakers",
+      "region": "Чехия: BudgetBakers описывает себя как Czech fintech; мировой охват через 15,000+ банков и 50 языков.",
+      "category": "personal and family finance manager, bank API",
+      "overlap": "Бюджеты, planned payments, cash-flow insights/predictive analytics и естественный язык через AI/MCP.",
+      "difference": "Полная PFM-платформа, API и developer integrations; это шире одного consumer decision flow.",
+      "price": "Free tier для ручного учета; Premium monthly/yearly/lifetime, но числовые цены отображаются в приложении.",
+      "scale": {"metric_type": "downloads and infrastructure", "value": "14m+ downloads; 15k+ bank connections; 50 languages", "date": "дата заявления не названа; проверено 2026-09-12"},
+      "source_urls": ["https://budgetbakers.com/en/products/wallet/", "https://budgetbakers.com/en/products/wallet/features/bank-sync/", "https://budgetbakers.com/"]
+    },
+    {
+      "id": "spendee",
+      "name": "Spendee",
+      "region": "Чехия: Spendee a.s., Prague. Конкретные страны обслуживания публичной страницей не подтверждены.",
+      "category": "budgeting, bank sync, shared wallets",
+      "overlap": "Бюджет по категориям, предупреждения 75%/90% и daily amount to stay on track.",
+      "difference": "Контроль лимитов категорий, не отдельный прогноз последствий покупки с обязательствами и следующим доходом.",
+      "price": "Basic free; Plus $1.99/месяц или $14.99/год; Premium $5.99/месяц или $35.99/год; trial 7 дней; цены зависят от страны.",
+      "scale": {"metric_type": "не опубликовано", "value": null, "date": null},
+      "source_urls": ["https://www.spendee.com/pricing", "https://help.spendee.com/article/131-budget-my-money", "https://files.spendee.com/terms-and-conditions/Privacy%20Policy.pdf"]
+    },
+    {
+      "id": "frollo",
+      "name": "Frollo App",
+      "region": "Австралия: consumer app и Open Banking through Australian Consumer Data Right.",
+      "category": "open-banking money management and financial wellness",
+      "overlap": "Бюджеты, цели, recurring bills и подсказки при недостатке средств для будущих счетов.",
+      "difference": "Начинает с open banking и является также B2B financial-wellness platform; Telegram/manual-input MVP не совпадает с его data model.",
+      "price": "Полностью бесплатно, без рекламы.",
+      "scale": {"metric_type": "users", "value": "over 145,000 Australians", "date": "дата заявления не названа; проверено 2026-09-12"},
+      "source_urls": ["https://frollo.com.au/frollo-app/", "https://help.frollo.com.au/hc/en-au/articles/13411449808527-Frollo-Money-Management-App"]
+    },
+    {
+      "id": "banktivity",
+      "name": "Banktivity",
+      "region": "Международный bank coverage: 15,000+ банков, включая Австралию, Канаду, Великобританию; страна регистрации компании просмотренными источниками не установлена.",
+      "category": "native Apple personal finance and investments",
+      "overlap": "Бюджет, долги, emergency fund, цели и подключение банковских счетов.",
+      "difference": "Нативный Mac/iPhone/iPad suite для глубокого учета активов и инвестиций, не conversational purchase assistant.",
+      "price": "Bronze $6.99/месяц, Silver $8.99/месяц, Gold $10.99/месяц при годовой оплате; USD, taxes excluded; trial 30 дней.",
+      "scale": {"metric_type": "результат подписчиков, не аудитория", "value": "subscribers save on average an extra $500 every year", "date": "дата заявления не названа; проверено 2026-09-12"},
+      "source_urls": ["https://www.banktivity.com/content/plans/plans.php", "https://www.banktivity.com/content/features/features.php"]
+    },
+    {
+      "id": "moneywiz",
+      "name": "MoneyWiz",
+      "region": "Международный: 40,000+ банков в 50+ странах; Plaid для US/Canada, Salt Edge для EEA и других стран.",
+      "category": "multi-currency personal accounting and bank sync",
+      "overlap": "Ручные счета или импорт, budgets, scheduled operations, bank sync и автоматическая категоризация.",
+      "difference": "Универсальная личная бухгалтерия для pro-user, не упрощенный single-question flow.",
+      "price": "Standard $29.99/год; Premium $59.99/год или $5.99/месяц; USD, taxes may apply.",
+      "scale": {"metric_type": "infrastructure coverage", "value": "40,000+ banks in 50+ countries", "date": "дата заявления не названа; проверено 2026-09-12"},
+      "source_urls": ["https://www.wiz.money/", "https://www.wiz.money/pricing", "https://help.wiz.money/en/articles/4440621-how-to-change-the-online-banking-provider"]
+    },
+    {
+      "id": "toshl",
+      "name": "Toshl Finance",
+      "region": "Словения: Toshl d.o.o., Kranj; bank connections worldwide.",
+      "category": "manual expense tracker, budgeting and bank sync",
+      "overlap": "Ручной режим/импорт, бюджеты, repeating operations, reminders и planning graphs.",
+      "difference": "Сильный general-purpose tracker; не заявлен отдельный flow вопроса о покупке до оплаты.",
+      "price": "Free, Pro и Medici; trial 30 дней. В извлеченной публичной версии страницы числовые цены не отображены.",
+      "scale": {"metric_type": "bank connection coverage", "value": "about 14,000 types of banks and financial services worldwide", "date": "страница FAQ без даты; проверено 2026-09-12"},
+      "source_urls": ["https://toshl.com/pricing/", "https://toshl.com/bank-connections/", "https://toshl.com/terms/doo/", "https://toshl.com/blog/frequently-asked-questions-faq/"]
+    },
+    {
+      "id": "zenmoney",
+      "name": "Дзен-мани",
+      "region": "Россия: рублевые цены; QR-check feature also named for Russia, Kazakhstan, Uzbekistan, Montenegro and Moldova.",
+      "category": "expense tracking, budget, bank sync and receipt parsing",
+      "overlap": "Планы/бюджет, счета, отчеты, QR-чеки, family access и подключение банков.",
+      "difference": "Учет и аналитика с планированием; pre-purchase dialog is not stated as the primary product scenario.",
+      "price": "Базовый free; Premium 199 руб./месяц, 1,490 руб./год, 2,990 руб. навсегда.",
+      "scale": {"metric_type": "не опубликовано", "value": null, "date": null},
+      "source_urls": ["https://zenmoney.ru/a/", "https://app.zenmoney.ru/", "https://support.zenmoney.ru/knowledge-bases/2/articles/1383-chto-dayot-skanirovanie-qr-kodov-kak-rabotat-s-chekami"]
+    },
+    {
+      "id": "drebedengi",
+      "name": "Дребеденьги",
+      "region": "Россия: сайт и цены в рублях; русский/английский продукт.",
+      "category": "family finance accounting, planning and investments tracking",
+      "overlap": "План/факт до года, накопления, планируемые операции, QR-чеки, SMS/push, семейный режим.",
+      "difference": "Это учет и планирование с обширными настройками, а не assistant to test one purchase consequence.",
+      "price": "Free with limits; Premium 899 руб./год. Отдельно App Store shows local in-app 1,190 руб.; не смешано с web price.",
+      "scale": {"metric_type": "people and transactions", "value": "340,000+ people; 70,000,000+ transactions", "date": "дата заявления не названа; проверено 2026-09-12"},
+      "source_urls": ["https://www.drebedengi.ru/", "https://www.drebedengi.ru/?module=v2_aboutPrice"]
+    }
+  ]
+}
