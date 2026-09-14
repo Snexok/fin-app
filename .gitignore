@@ -1,0 +1,33 @@
+# Local caches and validation copies. Approved exports in output/ stay visible.
+.DS_Store
+.build/
+.codex-finalizer/
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+.next/
+coverage/
+*.log
+.idea/
+.vscode/
+
+# Credentials and machine-specific settings.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+
+# Office lock files and temporary copies.
+~$*
+*.tmp
+*.swp
+
+# Existing portable bundles and draft. Originals remain on disk.
+output/*.zip
+output/trailer/mozhno-story.pptx

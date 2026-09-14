@@ -1,0 +1,10 @@
+Use case: precise UI refinement. Image 1 is the finished approved home mockup. Preserve EVERYTHING about this screen: layout, dimensions, all numbers, all other text, material realism, background, colors, leather wallet, router, buttons, bottom navigation, type weights and spacing. Do not redesign it.
+
+Make only two small content corrections:
+1. Add a discreet plain text label "Демо-данные" directly underneath the top brand "Можно?", in small pale mint sans-serif type. Use the existing vertical gap between the brand and the hero. It must be legible but clearly secondary, without a badge, pill, border or extra card. This marks the whole image as sample data. Do not invent an update date or add other disclaimers.
+2. In the left secondary tile "Мой план", replace the current supporting copy with exactly two lines:
+"Доходы и платежи"
+"Резерв и цели"
+Make these lines completely legible and keep them clear of the small glass calendar illustration. If necessary slightly shrink and move that small calendar toward the lower-right corner of its tile, keeping the same realistic emerald material and keeping it inside the tile. Keep the title "Мой план" and its chevron unchanged.
+
+All other details must stay as close to Image 1 as possible, including the labels "Сегодня можно потратить", "1 900 ₽", "Платежи и резерв учтены", "Показать расчёт", and "Проверить покупку". No extra changes. Deliver one portrait 9:16 full-bleed screen.

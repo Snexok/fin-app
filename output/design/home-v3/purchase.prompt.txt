@@ -1,0 +1,20 @@
+Use case: ui-mockup. Create the next interaction state of Image 1, the accepted rich emerald-glass mobile financial coach "Можно?". Image 1 is the exact interface style reference and background screen. Output one polished full-bleed portrait 9:16 mobile screenshot, no device frame, no presentation canvas.
+
+Show a beautiful purchase-check bottom sheet opened over that same home screen. Keep recognizable emerald mineral/silk material and soft light from the reference. The top ~20% of the viewport still shows the home screen dimmed and softly blurred behind the modal: status bar 9:41, the brand Можно?, and just a hint of the mint wallet hero. The home screen does not scroll or rearrange; it is obscured by the overlay. The sheet covers the rest of the screen including the bottom navigation, reaches the bottom edge and has a proper safe area. No visible navigation floating above the sheet.
+
+The bottom sheet is exquisite thick smoked emerald glass with generous round top corners, restrained refractive highlights at the edge, dark solid-enough interior for crisp text, subtle photorealistic luminosity. It must feel like a deliberate companion to the reference's luxurious wallet/glass design, not a flat generic form. Preserve the warm emerald / mint palette, rich material depth, and large soft geometry. Fine Cyrillic typography, clear regular labels and semibold headings, precisely aligned inner gutters. Real large comfortable tap targets. No tiny explanatory prose, no decorative random objects. The content should use the available height with airy, composed rhythm.
+
+State: the user has already entered a sample purchase, no keyboard visible, nothing yet calculated, nothing added to spending. Do NOT show a computed result, financial recommendation, remaining balance or new dates. This is only the editable check form.
+
+Exact layout and Russian copy:
+- At the top of the sheet a centered subtle drag handle. In header, "Проверить покупку" in polished white semibold, and a small circular close X control right.
+- A short breathing gap then field label "Покупка" in soft mint, and a medium-height dark emerald inset rounded field with exact value "Телефон" in large readable white. A small simple edit/pencil line icon at far right.
+- Field label "Сумма". Under it, the visual anchor: one broad luminous pale-mint glass numeric field with large dark "60 000 ₽". Make this beautiful, substantial and completely readable; number has elegant optical spacing and ruble slightly smaller. No second amount anywhere.
+- Below the amount, a quiet compact outline control with microphone icon and exact text "Продиктовать", comfortably tappable, much less prominent than the bottom primary action.
+- Field label "Когда хотите купить?" in white or soft mint. Beneath, a genuine two-option segmented selector with rounded outline: selected "Сегодня" with a small check, and unselected "Другая дата" with a small calendar outline icon. Balanced, equally sized portions, clearly distinct selected state.
+- Generous flexible space before the action region; do not add new content to fill it.
+- Near bottom a wide pale-mint luminous solid glass primary button, with dark exact text "Рассчитать последствия" and a small right arrow. Keep its text on one line with proper side padding.
+- Immediately below, centered quiet legible caption "Покупка не добавится в расходы".
+- Bottom safe area and white home indicator.
+
+Use exactly these labels. No bank logos, no checkout controls, no fake calculation, no assistant chat bubble, no Submit button, no extra badges, no invented currency values. Keep the visual richness of Image 1, but let the form typography and primary action be extremely clear. The rendered result should look like an exquisitely refined real app screenshot in the same design system.
