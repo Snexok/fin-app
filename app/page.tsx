@@ -35,7 +35,13 @@ function ProposalCard({ initial, onApplied }: { initial: Proposal; onApplied: ()
       setNote(code === "PROPOSAL_EXPIRED" ? "Предложение устарело. Напишите трату ещё раз." : "Не получилось записать. Попробуйте ещё раз."); setState("error");
     } catch { setNote("Нет связи. Нажмите ещё раз, повтор безопасен."); setState("error"); }
   }
-  async function reject() { tap(); setState("pending"); await post(`/api/v1/proposals/${p.id}/reject`).catch(() => null); setState("rejected"); }
+  async function reject() {
+    tap(); setState("pending"); setNote("");
+    const r = await post(`/api/v1/proposals/${p.id}/reject`).catch(() => null);
+    if (r?.ok && r.j?.proposal?.status === "applied") { setState("done"); setNote("Эта запись уже сохранена."); return; }
+    if (r?.ok) { setState("rejected"); return; }
+    setNote(r ? "Не получилось отменить. Попробуйте ещё раз." : "Нет связи. Попробуйте ещё раз."); setState("error");
+  }
   return (
     <div className={"proposal-card" + (state === "done" ? " is-done" : "")}>
       <div className="proposal-row">
@@ -97,7 +103,7 @@ function TelegramLink({ linked, onLinked }: { linked: boolean; onLinked: () => v
                 <button type="button" className="chip" onClick={() => { tap(); navigator.clipboard?.writeText(link.command).then(() => setCopied(true)); }}>{copied ? "Скопировано" : "Копировать"}</button></div>
             </>
           )}
-          <p className="tg-wait"><span className="typing-dots" aria-hidden="true"><i /><i /><i /></span>Ждём подтверждения от бота…</p>
+          <p className="tg-wait"><span className="typing-dots" aria-hidden="true"><i /><i /><i /></span>Ждём, пока вы нажмёте «Разрешить» в боте…</p>
         </div>
       )}
       {err && <p className="proposal-note">{err}</p>}
@@ -117,7 +123,6 @@ const isoIn = (days: number) => { const d = new Date(); d.setDate(d.getDate() + 
 const isoDay = (day: number) => { const d = new Date(); if (d.getDate() >= day) d.setMonth(d.getMonth() + 1); d.setDate(day); return d.toISOString().slice(0, 10); };
 const daysUntil = (iso: string) => Math.round((new Date(iso + "T00:00:00").getTime() - new Date(new Date().toDateString()).getTime()) / 86400000);
 const shortDate = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
-const whenText = (iso: string) => { const n = daysUntil(iso); return n <= 0 ? "сегодня" : n === 1 ? "завтра" : `через ${n} дн.`; };
 const untilDate = (iso: string) => {
   const n = daysUntil(iso);
   const label = new Date(iso + "T00:00:00").toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
@@ -380,7 +385,8 @@ function HistoryList({ items, onAsk }: { items: Feed; onAsk?: () => void }) {
   );
 }
 
-function Onboarding({ onDone, initial }: { onDone: () => void; initial?: Profile | null }) {
+function Onboarding({ onDone, initial, baseVersion, onConflict }: { onDone: () => void; initial?: Profile | null; baseVersion?: string | null; onConflict?: () => void }) {
+  const version = useRef<string | null>(baseVersion ?? null);
   const [step, setStep] = useState(0);
   const [a, setA] = useState<Record<string, string>>(() => initial ? ({
     balance: String(initial.balance), incomeAmount: String(initial.nextIncome.amount), incomeDate: initial.nextIncome.date,
@@ -406,9 +412,21 @@ function Onboarding({ onDone, initial }: { onDone: () => void; initial?: Profile
     const payments = payList;
     const g = a.goal?.trim() ? parseLine(a.goal) : null;
     if (a.goal?.trim() && !g) { setErr("Цель не распознана. Формат: Отпуск 60000 2027-06-01"); return; }
-    const body = { balance: Number(a.balance), reserve: Number(a.reserve || 0), nextIncome: { amount: Number(a.incomeAmount), date: a.incomeDate }, payments, goal: g, ...(a.essentialDaily?.trim() ? { essentialDaily: Number(a.essentialDaily) } : {}) };
-    const r = await fetch("/api/profile", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const j = await r.json(); if (!r.ok) { setErr(j.errors?.join("; ")); return; } onDone();
+    const body = { balance: Number(a.balance), reserve: Number(a.reserve || 0), nextIncome: { amount: Number(a.incomeAmount), date: a.incomeDate }, payments, goal: g, ...(a.essentialDaily?.trim() ? { essentialDaily: Number(a.essentialDaily) } : {}),
+      ...(version.current ? { baseFinanceVersion: version.current } : {}) };
+    const r = await post("/api/profile", body).catch(() => null);
+    if (!r) { setErr("Нет связи. Попробуйте ещё раз."); return; }
+    if (r.status === 409 && r.j?.error?.code === "FINANCE_VERSION_CONFLICT") {
+      // Мягко: ваши ответы остаются в форме, показываем актуальный остаток и разрешаем сохранить ещё раз.
+      const d = r.j.error.details ?? {};
+      version.current = d.financeVersion ?? null;
+      if (d.balanceMinor != null) setA((x) => ({ ...x, balance: String(Number(d.balanceMinor) / 100) }));
+      setErr(`Пока вы заполняли план, данные изменились (например, записалась трата в Telegram).${d.balanceMinor != null ? ` Текущий остаток: ${rub(Number(d.balanceMinor) / 100)}, мы подставили его.` : ""} Проверьте и нажмите «Сохранить» ещё раз.`);
+      onConflict?.();
+      return;
+    }
+    if (!r.ok) { setErr(r.j?.error?.message ?? "Не получилось сохранить. Попробуйте ещё раз."); return; }
+    onDone();
   }
 
   const isReview = step >= QUESTIONS.length;
@@ -557,7 +575,17 @@ export default function Home() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => { const el = logRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: reduced() ? "auto" : "smooth" }); }, [msgs, busy, tab]);
-  const load = () => fetch("/api/profile").then((r) => r.json()).then(setSt);
+  // GET не создаёт аккаунт: в Telegram Mini App вход по initData, в браузере — явное создание сессии.
+  const load = async (): Promise<void> => {
+    let r = await fetch("/api/profile");
+    if (r.status === 401) {
+      const init = tgWebApp()?.initData;
+      const s = init ? await post("/api/v1/session/telegram", { initData: init }) : null;
+      if (!s?.ok) await post("/api/v1/session");
+      r = await fetch("/api/profile");
+    }
+    if (r.ok) setSt(await r.json());
+  };
   useEffect(() => {
     const tg = tgWebApp();
     if (!tg) return;
@@ -569,13 +597,17 @@ export default function Home() {
       if (tg.setBackgroundColor) tg.setBackgroundColor("bg_color");
     } catch {}
   }, []);
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    // В Mini App сначала входим как пользователь Telegram (initData проверяется на сервере), затем грузим план.
+    const init = tgWebApp()?.initData;
+    (init ? post("/api/v1/session/telegram", { initData: init }).catch(() => null) : Promise.resolve(null)).then(() => load());
+  }, []);
   async function send(text: string) {
     if (!text.trim()) return;
     setMsgs((m) => [...m, { me: true, text }]); setInput(""); setBusy(true);
     try {
       const r = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: text }) }).then((r) => r.json());
-      setMsgs((m) => [...m, { me: false, text: r.reply || r.error?.message || r.error, impact: r.impact, proposal: r.proposal }]); load();
+      setMsgs((m) => [...m, { me: false, text: r.reply || r.error?.message || "Не получилось ответить. Попробуйте ещё раз.", impact: r.impact, proposal: r.proposal }]); load();
     } finally { setBusy(false); }
   }
 
@@ -596,7 +628,7 @@ export default function Home() {
         stream.getTracks().forEach((t) => t.stop()); recRef.current = null; setListening(false);
         const fd = new FormData(); fd.append("audio", new Blob(chunks, { type: "audio/webm" }), "voice.webm");
         const r = await fetch("/api/stt", { method: "POST", body: fd }).then((r) => r.json());
-        if (r.text) send(r.text); else setMsgs((m) => [...m, { me: false, text: "Голос не распознан: " + (r.error || "") }]);
+        if (r.text) send(r.text); else setMsgs((m) => [...m, { me: false, text: "Голос не распознан: " + (r.error?.message || "") }]);
       };
       recRef.current = mr; mr.start(); setListening(true);
     });
@@ -636,7 +668,7 @@ export default function Home() {
 
       <div id="workspace" className="workspace">
         {!st.profile || edit ? (
-          <Onboarding initial={st.profile} onDone={() => { setEdit(false); load(); }} />
+          <Onboarding initial={st.profile} baseVersion={(st as any).meta?.financeVersion ?? null} onDone={() => { setEdit(false); load(); }} />
         ) : (
           <>
             <section hidden={tab !== "home"} aria-label="Главная">
@@ -777,6 +809,11 @@ export default function Home() {
                 <Icon name="edit" />Изменить данные
               </button>
               <TelegramLink linked={!!(st as any).account?.telegramLinked} onLinked={load} />
+              {!tgWebApp()?.initData && (
+                <button type="button" className="button-secondary full-width" onClick={async () => { await post("/api/v1/session/logout"); setSt(null); load(); }}>
+                  Выйти на этом устройстве
+                </button>
+              )}
             </section>
 
             <section hidden={tab !== "assistant"} className="conversation glass" aria-labelledby="chat-title">
