@@ -174,3 +174,51 @@ describe("simulation DoS (High #2) over HTTP", () => {
     expect(last).toBe(429);
   });
 });
+
+describe("onboarding persistence (server-side plan + session cookie)", () => {
+  it("POST /api/profile stores plan; same cookie still sees onboarded profile", async () => {
+    await newSession();
+    const token = jar.get(SESSION_COOKIE)!.value;
+    const save = await call(profilePOST, req("/api/profile", { method: "POST", body: profileBody() }));
+    expect(save.status).toBe(200);
+    expect(save.body.ok).toBe(true);
+    expect(save.body.snapshot).toBeTruthy();
+
+    // Fresh request jar with the same cookie (simulates reload / new serverless instance with shared DB).
+    jar.clear();
+    jar.set(SESSION_COOKIE, { value: token });
+    const again = await call(profileGET as never, req("/api/profile"));
+    expect(again.status).toBe(200);
+    expect(again.body.profile).toMatchObject({
+      balance: 60000,
+      reserve: 10000,
+      nextIncome: { amount: 80000, date: "2026-11-25" },
+    });
+    expect(again.body.profile.payments?.[0]).toMatchObject({ name: "Аренда", amount: 30000 });
+    expect(again.body.id).toBeTruthy();
+  });
+
+  it("Telegram Mini App re-login with same initData maps to the same onboarded user", async () => {
+    vi.stubEnv("TELEGRAM_BOT_TOKEN", "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    const bot = "123456789:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const now = Math.floor(Date.now() / 1000);
+    const initData = signInitData({ auth_date: String(now), user: JSON.stringify({ id: 8800042, first_name: "K" }) }, bot);
+
+    const login1 = await call(tgLoginPOST, req("/api/v1/session/telegram", { method: "POST", body: { initData } }));
+    expect(login1.status).toBe(200);
+    const save = await call(profilePOST, req("/api/profile", { method: "POST", body: profileBody({ balance: 42000 }) }));
+    expect(save.status).toBe(200);
+    const userId = (await call(meGET as never, req("/api/v1/me"))).body.id as string;
+
+    // New Mini App open: new cookie, same Telegram identity.
+    jar.clear();
+    const login2 = await call(tgLoginPOST, req("/api/v1/session/telegram", { method: "POST", body: { initData } }));
+    expect(login2.status).toBe(200);
+    const me = await call(meGET as never, req("/api/v1/me"));
+    expect(me.body.id).toBe(userId);
+    const profile = await call(profileGET as never, req("/api/profile"));
+    expect(profile.body.profile.balance).toBe(42000);
+    expect(profile.body.id).toBe(userId);
+    vi.unstubAllEnvs();
+  });
+});

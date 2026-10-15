@@ -16,7 +16,9 @@ const LIMITS: Record<string, string> = {
 };
 const uuid = () => (crypto as any).randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const post = (url: string, body: unknown = {}, headers: Record<string, string> = {}) =>
-  fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, ok: r.ok, j: await r.json().catch(() => ({})) }));
+  fetch(url, { method: "POST", credentials: "include", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, ok: r.ok, j: await r.json().catch(() => ({})) }));
+/** Same-origin GET with cookies — required in Telegram Mini App iframe (third-party context). */
+const apiGet = (url: string) => fetch(url, { credentials: "include" });
 type Proposal = { id: string; revision: number; status: string; payload: { direction: string; amountMinor: string; description?: string; date: string } };
 
 function ProposalCard({ initial, onApplied }: { initial: Proposal; onApplied: () => void }) {
@@ -70,7 +72,7 @@ function TelegramLink({ linked, onLinked }: { linked: boolean; onLinked: () => v
   useEffect(() => {
     if (!link || status === "approved" || status === "done") return;
     const t = setInterval(async () => {
-      const r = await fetch(`/api/v1/account-links/${link.id}`).then((r) => r.json()).catch(() => null);
+      const r = await apiGet(`/api/v1/account-links/${link.id}`).then((r) => r.json()).catch(() => null);
       if (r?.status) setStatus(r.status);
       if (r?.status === "expired") clearInterval(t);
     }, 2500);
@@ -423,7 +425,7 @@ function Onboarding({ onDone, initial, baseVersion, onConflict }: { onDone: () =
     if (!r) { setErr("Нет связи. Попробуйте ещё раз."); return; }
     if (r.status === 409 && r.j?.error?.code === "FINANCE_VERSION_CONFLICT") {
       // Мягко: загружаем весь актуальный план (остаток, доход, оставшиеся платежи, цель), чтобы не вернуть уже оплаченное.
-      const fresh = await fetch("/api/profile").then((x) => (x.ok ? x.json() : null)).catch(() => null);
+      const fresh = await apiGet("/api/profile").then((x) => (x.ok ? x.json() : null)).catch(() => null);
       if (fresh?.profile) {
         version.current = fresh.meta?.financeVersion ?? null;
         setA(answersFrom(fresh.profile));
@@ -587,12 +589,12 @@ export default function Home() {
   useEffect(() => { const el = logRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: reduced() ? "auto" : "smooth" }); }, [msgs, busy, tab]);
   // GET не создаёт аккаунт: в Telegram Mini App вход по initData, в браузере — явное создание сессии.
   const load = async (): Promise<void> => {
-    let r = await fetch("/api/profile");
+    let r = await apiGet("/api/profile");
     if (r.status === 401) {
       const init = tgWebApp()?.initData;
       if (init) { const s = await post("/api/v1/session/telegram", { initData: init }); if (!s.ok) { setAuthErr("Не удалось подтвердить вход через Telegram. Откройте приложение из бота ещё раз."); return; } }
       else await post("/api/v1/session");
-      r = await fetch("/api/profile");
+      r = await apiGet("/api/profile");
     }
     if (r.ok) setSt(await r.json());
   };
@@ -620,7 +622,7 @@ export default function Home() {
     if (!text.trim()) return;
     setMsgs((m) => [...m, { me: true, text }]); setInput(""); setBusy(true);
     try {
-      const r = await fetch("/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: text }) }).then((r) => r.json());
+      const r = await fetch("/api/chat", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: text }) }).then((r) => r.json());
       setMsgs((m) => [...m, { me: false, text: r.reply || r.error?.message || "Не получилось ответить. Попробуйте ещё раз.", impact: r.impact, proposal: r.proposal }]); load();
     } finally { setBusy(false); }
   }
@@ -641,7 +643,7 @@ export default function Home() {
       mr.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop()); recRef.current = null; setListening(false);
         const fd = new FormData(); fd.append("audio", new Blob(chunks, { type: "audio/webm" }), "voice.webm");
-        const r = await fetch("/api/stt", { method: "POST", body: fd }).then((r) => r.json());
+        const r = await fetch("/api/stt", { method: "POST", credentials: "include", body: fd }).then((r) => r.json());
         if (r.text) send(r.text); else setMsgs((m) => [...m, { me: false, text: "Голос не распознан: " + (r.error?.message || "") }]);
       };
       recRef.current = mr; mr.start(); setListening(true);
