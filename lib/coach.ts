@@ -210,6 +210,8 @@ interface OnboardingDraft {
   /** finance_version на старте онбординга (null — бюджета не было). */
   base?: string | null;
   saving?: boolean;
+  /** update_id Telegram, уже применённый к этому шагу: повтор того же апдейта не продвигает онбординг второй раз. */
+  lastUpdateId?: number;
   balanceMinor?: string; incomeMinor?: string; incomeDate?: string;
   payments?: { name: string; amountMinor: string; date: string }[];
   reserveMinor?: string;
@@ -229,7 +231,7 @@ export async function onboardingActive(userId: string, channel: Channel = "teleg
   return !!s?.onboarding;
 }
 
-export async function onboardingStep(userId: string, text: string, opts: { now?: Date; channel?: Channel; timezone?: string } = {}): Promise<{ reply: string; done: boolean }> {
+export async function onboardingStep(userId: string, text: string, opts: { now?: Date; channel?: Channel; timezone?: string; updateId?: number } = {}): Promise<{ reply: string; done: boolean }> {
   const now = opts.now ?? new Date();
   const channel = opts.channel ?? "telegram";
   const today = localDate(now, opts.timezone ?? (await userTimezone(await getDb(), userId)));
@@ -237,9 +239,12 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
   const d: OnboardingDraft = { ...st };
   const rev = st.rev ?? 0;
   if (st.saving) return { reply: "Сохраняю план, секунду…", done: false };
+  // Повторная доставка уже применённого апдейта (сбой после записи шага): только повторяем текущий вопрос.
+  if (opts.updateId != null && st.lastUpdateId === opts.updateId) return { reply: STEPS[st.step], done: false };
   const busy = { reply: "Получил несколько сообщений подряд. Ответьте, пожалуйста, ещё раз на вопрос:\n" + STEPS[st.step], done: false };
   const t = text.trim().slice(0, 2000);
   const amount = (s: string) => parseAmountDetailed(s);
+  if (st.step !== 2 && st.step !== 4 && parseAmountDetailed(t).ambiguous) return { reply: "В ответе несколько сумм. Напишите, пожалуйста, одну.", done: false };
   switch (d.step) {
     case 0: { const a = amount(t); if (a.negative) return { reply: "Если на счету минус, пока укажите 0, а долг добавим платежом.", done: false }; if (a.minor == null) return { reply: "Не получилось понять сумму. Напишите число, например 45000.", done: false }; d.balanceMinor = a.minor.toString(); break; }
     case 1: {
@@ -301,6 +306,7 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
   }
   d.step += 1;
   d.rev = rev + 1;
+  if (opts.updateId != null) d.lastUpdateId = opts.updateId;
   if (!(await casOnboarding(userId, channel, rev, d))) return busy;
   return { reply: STEPS[d.step], done: false };
 }

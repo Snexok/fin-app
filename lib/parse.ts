@@ -89,7 +89,8 @@ export function parseAmount(text: string): number | null {
 
 /** Строгий разбор даты. Невозможные даты (31.02) -> null. "20-го" после 20-го -> следующий месяц. */
 export function parseDate(text: string, today: ISODate, opts: { prefer?: "future" | "past" } = {}): ISODate | null {
-  const t = norm(text);
+  // Денежные токены ("10.12 ₽", "15.50 руб", "1.500 тыс") не считаются датой: та же граница, что в stripDates.
+  const t = norm(text).replace(new RegExp(`(?<![\\d.,])\\d{1,2}[./]\\d{1,3}(?=\\s*(?:млн|миллион|тыс|т\\.?р|к(?![${L}])|k(?![${L}])|₽|руб|р\\.|р(?![${L}])))`, "g"), " ");
   const past = opts.prefer === "past";
   if (/сегодня/.test(t)) return today;
   if (/позавчера/.test(t)) return addDays(today, -2);
@@ -235,6 +236,7 @@ export function parsePaymentLines(text: string, today: ISODate): { items: Parsed
     const name = line.replace(/[-−]?\s*\d.*$/, "").trim() || "Платёж";
     if (!date) errors.push({ line: i + 1, text: line.trim(), reason: "не понял дату" });
     else if (a.negative) errors.push({ line: i + 1, text: line.trim(), reason: "сумма не может быть отрицательной" });
+    else if (a.ambiguous) errors.push({ line: i + 1, text: line.trim(), reason: "несколько сумм, оставьте одну" });
     else if (a.minor == null || a.minor <= 0n) errors.push({ line: i + 1, text: line.trim(), reason: "не понял сумму" });
     else items.push({ name, amountMinor: a.minor, date });
   });

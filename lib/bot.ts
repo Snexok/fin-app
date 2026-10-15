@@ -92,7 +92,7 @@ export function createBot(token = requireTelegramBotToken(), opts: { botInfo?: U
     const userId = (await userOf(ctx))!;
     try { await enforce([LIMITS.chatPerUser(userId), LIMITS.chatPerUserDay(userId)]); }
     catch { return ctx.reply("Давайте сделаем небольшую паузу, через минуту продолжим."); }
-    if (await onboardingActive(userId)) return ctx.reply((await onboardingStep(userId, text)).reply);
+    if (await onboardingActive(userId)) return ctx.reply((await onboardingStep(userId, text, { updateId: ctx.update.update_id })).reply);
     const r = await answer(userId, text, { channel: "telegram" });
     if (r.needsOnboarding) return ctx.reply("Давайте начнём с /start, чтобы я узнал остаток, доход и платежи.");
     if (r.proposal) return ctx.reply(r.reply, { reply_markup: proposalKeyboard(r.proposal) });
