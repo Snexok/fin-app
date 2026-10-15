@@ -42,7 +42,7 @@ export async function touchSession(token: string | undefined | null, now = new D
   const db = await getDb();
   const next = new Date(now.getTime() + SESSION_TTL_DAYS * 86_400_000);
   const r = await db.query<{ expires_at: Date }>(
-    `UPDATE sessions SET expires_at=$2 WHERE token_hash=decode($1,'hex') AND revoked_at IS NULL AND expires_at > $3
+    `UPDATE sessions SET expires_at=LEAST($2::timestamptz, created_at + make_interval(days => ${SESSION_MAX_AGE_DAYS})) WHERE token_hash=decode($1,'hex') AND revoked_at IS NULL AND expires_at > $3
        AND expires_at < $4 AND created_at > $5 RETURNING expires_at`,
     [sha256hex(token), next, now, new Date(now.getTime() + (SESSION_TTL_DAYS / 2) * 86_400_000), new Date(now.getTime() - SESSION_MAX_AGE_DAYS * 86_400_000)]);
   return r.rows[0] ? new Date(r.rows[0].expires_at) : null;
@@ -81,8 +81,8 @@ export async function userIdForSessionToken(token: string | undefined | null, no
   if (!token || token.length < 20 || token.length > 200) return null;
   const db = await getDb();
   const r = await db.query<{ user_id: string }>(
-    "SELECT s.user_id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = decode($1,'hex') AND s.revoked_at IS NULL AND s.expires_at > $2 AND u.deleted_at IS NULL",
-    [sha256hex(token), now],
+    "SELECT s.user_id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = decode($1,'hex') AND s.revoked_at IS NULL AND s.expires_at > $2 AND s.created_at > $3 AND u.deleted_at IS NULL",
+    [sha256hex(token), now, new Date(now.getTime() - SESSION_MAX_AGE_DAYS * 86_400_000)],
   );
   return r.rows[0]?.user_id ?? null;
 }
