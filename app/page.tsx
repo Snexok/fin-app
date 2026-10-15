@@ -385,13 +385,18 @@ function HistoryList({ items, onAsk }: { items: Feed; onAsk?: () => void }) {
   );
 }
 
+/** Ответы формы из сохранённого профиля (при открытии и после конфликта версий). */
+function answersFrom(initial?: Profile | null): Record<string, string> {
+  return initial ? ({
+    balance: String(initial.balance), incomeAmount: String(initial.nextIncome.amount), incomeDate: initial.nextIncome.date,
+    payments: "", reserve: String(initial.reserve), essentialDaily: (initial as any).essentialDaily != null ? String((initial as any).essentialDaily) : "",
+    goal: initial.goal ? `${initial.goal.name} ${initial.goal.amount} ${initial.goal.date}` : "" }) as Record<string, string> : {};
+}
+
 function Onboarding({ onDone, initial, baseVersion, onConflict }: { onDone: () => void; initial?: Profile | null; baseVersion?: string | null; onConflict?: () => void }) {
   const version = useRef<string | null>(baseVersion ?? null);
   const [step, setStep] = useState(0);
-  const [a, setA] = useState<Record<string, string>>(() => initial ? ({
-    balance: String(initial.balance), incomeAmount: String(initial.nextIncome.amount), incomeDate: initial.nextIncome.date,
-    payments: "", reserve: String(initial.reserve), essentialDaily: (initial as any).essentialDaily != null ? String((initial as any).essentialDaily) : "",
-    goal: initial.goal ? `${initial.goal.name} ${initial.goal.amount} ${initial.goal.date}` : "" }) as Record<string, string> : {});
+  const [a, setA] = useState<Record<string, string>>(() => answersFrom(initial));
   const [payList, setPayList] = useState<Payment[]>(() => initial?.payments ? [...initial.payments] : []);
   const [payDraft, setPayDraft] = useState({ name: "", amount: "", date: "" });
   const [err, setErr] = useState("");
@@ -417,11 +422,15 @@ function Onboarding({ onDone, initial, baseVersion, onConflict }: { onDone: () =
     const r = await post("/api/profile", body).catch(() => null);
     if (!r) { setErr("Нет связи. Попробуйте ещё раз."); return; }
     if (r.status === 409 && r.j?.error?.code === "FINANCE_VERSION_CONFLICT") {
-      // Мягко: ваши ответы остаются в форме, показываем актуальный остаток и разрешаем сохранить ещё раз.
-      const d = r.j.error.details ?? {};
-      version.current = d.financeVersion ?? null;
-      if (d.balanceMinor != null) setA((x) => ({ ...x, balance: String(Number(d.balanceMinor) / 100) }));
-      setErr(`Пока вы заполняли план, данные изменились (например, записалась трата в Telegram).${d.balanceMinor != null ? ` Текущий остаток: ${rub(Number(d.balanceMinor) / 100)}, мы подставили его.` : ""} Проверьте и нажмите «Сохранить» ещё раз.`);
+      // Мягко: загружаем весь актуальный план (остаток, доход, оставшиеся платежи, цель), чтобы не вернуть уже оплаченное.
+      const fresh = await fetch("/api/profile").then((x) => (x.ok ? x.json() : null)).catch(() => null);
+      if (fresh?.profile) {
+        version.current = fresh.meta?.financeVersion ?? null;
+        setA(answersFrom(fresh.profile));
+        setPayList([...(fresh.profile.payments ?? [])]);
+        setStep(QUESTIONS.length);
+      } else version.current = r.j.error.details?.financeVersion ?? null;
+      setErr("Пока вы заполняли план, данные изменились (например, записалась трата в Telegram). Мы загрузили актуальные остаток, доход и платежи: проверьте их и нажмите «Сохранить» ещё раз.");
       onConflict?.();
       return;
     }
@@ -561,6 +570,7 @@ function Onboarding({ onDone, initial, baseVersion, onConflict }: { onDone: () =
 
 export default function Home() {
   const [st, setSt] = useState<State | null>(null);
+  const [authErr, setAuthErr] = useState("");
   const [edit, setEdit] = useState(false);
   const [msgs, setMsgs] = useState<{ me: boolean; text: string; impact?: any; proposal?: Proposal }[]>([]);
   const [sMode, setSMode] = useState<"want" | "bought">("want");
@@ -580,8 +590,8 @@ export default function Home() {
     let r = await fetch("/api/profile");
     if (r.status === 401) {
       const init = tgWebApp()?.initData;
-      const s = init ? await post("/api/v1/session/telegram", { initData: init }) : null;
-      if (!s?.ok) await post("/api/v1/session");
+      if (init) { const s = await post("/api/v1/session/telegram", { initData: init }); if (!s.ok) { setAuthErr("Не удалось подтвердить вход через Telegram. Откройте приложение из бота ещё раз."); return; } }
+      else await post("/api/v1/session");
       r = await fetch("/api/profile");
     }
     if (r.ok) setSt(await r.json());
@@ -599,8 +609,12 @@ export default function Home() {
   }, []);
   useEffect(() => {
     // В Mini App сначала входим как пользователь Telegram (initData проверяется на сервере), затем грузим план.
+    // Если вход не удался, финансовый интерфейс не открываем: иначе остался бы доступен прежний аккаунт из cookie.
     const init = tgWebApp()?.initData;
-    (init ? post("/api/v1/session/telegram", { initData: init }).catch(() => null) : Promise.resolve(null)).then(() => load());
+    if (!init) { load(); return; }
+    post("/api/v1/session/telegram", { initData: init }).catch(() => null).then((r) => {
+      if (r?.ok) load(); else setAuthErr("Не удалось подтвердить вход через Telegram. Закройте и снова откройте приложение из бота.");
+    });
   }, []);
   async function send(text: string) {
     if (!text.trim()) return;
@@ -634,6 +648,12 @@ export default function Home() {
     });
   }
 
+  if (authErr) return (
+    <main className="app-shell loading-screen">
+      <header className="app-header"><div><p className="brand-caption">Можно?</p><h1>Финансы</h1></div></header>
+      <p className="proposal-note" role="alert">{authErr}</p>
+    </main>
+  );
   if (!st) return (
     <main className="app-shell loading-screen" aria-busy="true">
       <header className="app-header">
