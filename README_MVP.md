@@ -10,7 +10,7 @@
 - `lib/parse.ts` — разбор сумм ("15к", "50 000", "1,5 млн"), дат ("25.10", "5 ноября", "через 10 дней") и намерения.
 - `lib/ai/llm.ts` — LLM (OpenAI по умолчанию, `LLM_BASE_URL` для совместимых провайдеров) и STT.
 - `lib/coach.ts` — общий сценарий ответа и пошаговый онбординг (веб + Telegram).
-- `lib/storage.ts` — Postgres при `DATABASE_URL`/`POSTGRES_URL`, иначе JSON-файл. Ключ: `web:<id>` (cookie) или `tg:<id>`; `/link <web-id>` в боте связывает Telegram с веб-аккаунтом.
+- `lib/db.ts` — Postgres при `DATABASE_URL`/`POSTGRES_URL`, локально PGlite. Привязка Telegram: одноразовый код из веба + подтверждение кнопкой «Разрешить» в боте (см. docs/BACKEND.md).
 - `lib/bot.ts` — grammY-бот: `/start` (онбординг), `/status`, `/link`, текст, голосовые (STT при ключе).
 - `app/` — Next.js: `/` (онбординг, дашборд, чат с голосом через Web Speech API или запись + `/api/stt`), API `/api/profile`, `/api/chat`, `/api/stt`, `/api/telegram` (webhook).
 - `scripts/bot-polling.ts` — локальный бот в режиме polling.
