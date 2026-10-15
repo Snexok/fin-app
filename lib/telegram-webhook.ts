@@ -44,6 +44,16 @@ export async function processInboxUpdate(source: string, eventId: string, getBot
   }
 }
 
+/** Повтор упавших апдейтов без нового вебхука (вызывается cron-ом /api/cron/cleanup). */
+export async function retryPendingTelegram(limit = 20): Promise<number> {
+  const token = telegramBotToken();
+  if (!token) return 0;
+  const source = `telegram:${token.split(":")[0]}`;
+  let n = 0;
+  for (const id of await pendingInboxEvents(source, limit)) if ((await processInboxUpdate(source, id, () => botFor(token))) === "processed") n++;
+  return n;
+}
+
 export interface WebhookDeps {
   /** Запланировать работу после ответа (next/server after). В тестах — сбор промисов. */
   schedule: (task: () => Promise<unknown>) => void;

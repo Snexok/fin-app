@@ -27,7 +27,7 @@ export async function runRetention(now = new Date()): Promise<Record<string, num
     inbox: await run("DELETE FROM inbox WHERE (processed_at IS NOT NULL AND processed_at < $1) OR (processed_at IS NULL AND received_at < $2)", [ago(now, R.inboxProcessedDays), ago(now, R.inboxFailedDays)]),
     idempotencyKeys: await run("DELETE FROM idempotency_keys WHERE expires_at < $1", [ago(now, R.idempotencyAfterExpiryDays)]),
     conversationState: await run("DELETE FROM conversation_state WHERE updated_at < $1", [ago(now, R.conversationStateDays)]),
-    proposals: await run("DELETE FROM proposals WHERE status <> 'pending' AND created_at < $1", [ago(now, R.proposalsClosedDays)]),
+    proposals: await run("DELETE FROM proposals WHERE (status <> 'pending' AND created_at < $1) OR (status = 'pending' AND expires_at < $2)", [ago(now, R.proposalsClosedDays), ago(now, 7)]),
     decisions: await run(
       `DELETE FROM decisions d USING users u WHERE u.id = d.user_id AND
          ((NOT u.history_enabled AND d.created_at < $1) OR d.created_at < $2)`, [ago(now, R.decisionsNoHistoryDays), ago(now, R.decisionsHistoryDays)]),

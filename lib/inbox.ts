@@ -34,11 +34,19 @@ export async function releaseInboxEvent(source: string, eventId: string, errorCo
   await (await getDb()).query("UPDATE inbox SET locked_until=NULL, last_error=$3 WHERE source=$1 AND source_event_id=$2 AND processed_at IS NULL", [source, eventId, errorCode.slice(0, 100)]);
 }
 
-/** Необработанные события с истёкшей арендой (для повторов): старые первыми. */
+/** Через сколько необработанное событие считается устаревшим (старое сообщение не воспроизводим спустя сутки). */
+export const INBOX_RETRY_WINDOW_SEC = 24 * 3600;
+
+/** Необработанные события с истёкшей арендой (для повторов): старые первыми. Исчерпавшие попытки или устаревшие закрываются терминально. */
 export async function pendingInboxEvents(source: string, limit = 3, now = new Date()): Promise<string[]> {
-  const r = await (await getDb()).query<{ id: string }>(
+  const db = await getDb();
+  await db.query(
+    `UPDATE inbox SET processed_at=$4, locked_until=NULL, last_error=COALESCE(last_error,'') || ':GAVE_UP'
+      WHERE source=$1 AND processed_at IS NULL AND (locked_until IS NULL OR locked_until < $4) AND (attempts >= $2 OR received_at < $3)`,
+    [source, INBOX_MAX_ATTEMPTS, new Date(now.getTime() - INBOX_RETRY_WINDOW_SEC * 1000), now]);
+  const r = await db.query<{ id: string }>(
     `SELECT source_event_id AS id FROM inbox WHERE source=$1 AND processed_at IS NULL AND attempts < $2 AND (locked_until IS NULL OR locked_until < $3)
       AND received_at > $4 ORDER BY received_at LIMIT $5`,
-    [source, INBOX_MAX_ATTEMPTS, now, new Date(now.getTime() - 3600_000), limit]);
+    [source, INBOX_MAX_ATTEMPTS, now, new Date(now.getTime() - INBOX_RETRY_WINDOW_SEC * 1000), limit]);
   return r.rows.map((x) => x.id);
 }
