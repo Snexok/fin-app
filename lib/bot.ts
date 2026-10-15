@@ -2,24 +2,47 @@
 import { Bot, InlineKeyboard, type Context } from "grammy";
 import type { UserFromGetMe } from "grammy/types";
 import { answer, onboardingActive, onboardingStep, proposalText, snapshotText, startOnboarding } from "./coach";
-import { approveLink, telegramUserId } from "./auth";
+import { approveLink, denyLink, previewLink, telegramUserId, type LinkPreview } from "./auth";
 import { getForecast } from "./finance-service";
 import { confirmProposal, getProposal, rejectProposal, type ProposalView } from "./proposals";
 import { setState } from "./conversation";
 import { transcribe } from "./ai/llm";
 import { enforce, LIMITS } from "./rate-limit";
-import { telegramBotToken } from "./telegram-token";
+import { requireTelegramBotToken } from "./telegram-token";
+import { DEFAULT_TZ } from "./engine";
 
 const proposalKeyboard = (p: ProposalView) => new InlineKeyboard().text("Записать", `pc:${p.id}:${p.revision}`).text("Не нужно", `pr:${p.id}`);
 
 const LINK_REPLY: Record<string, string> = {
-  approved: "Код принят. Вернитесь в приложение и нажмите «Подтвердить» — так мы убедимся, что привязку начали именно вы.",
+  approved: "Доступ разрешён. Вернитесь в браузер и нажмите «Подтвердить» — так мы убедимся, что привязку начали именно вы.",
   invalid: "Такого кода нет. Возьмите свежий код в приложении: «Связать с Telegram».",
   expired: "Код устарел. Создайте новый в приложении, это займёт пару секунд.",
   already_used: "Этот код уже использован. Если нужно, создайте новый в приложении.",
 };
 
-export function createBot(token = telegramBotToken()!, opts: { botInfo?: UserFromGetMe } = {}) {
+const MAX_VOICE_BYTES = 10 * 1024 * 1024;
+
+const linkTime = (d: Date) => new Intl.DateTimeFormat("ru-RU", { timeZone: DEFAULT_TZ, day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }).format(d);
+
+/** Текст подтверждения привязки: что произойдёт, откуда запрос и предупреждение о фишинге. */
+export function linkPreviewText(p: Extract<LinkPreview, { status: "ok" }>): string {
+  return [
+    "Запрос доступа к вашим финансам",
+    "",
+    "Кто-то (возможно, вы) открыл «Можно?» в браузере и хочет связать его с этим Telegram-аккаунтом.",
+    p.device ? `Устройство: ${p.device}` : null,
+    `Запрос создан: ${linkTime(p.createdAt)} (МСК), действует до ${linkTime(p.expiresAt).split(", ").pop()}.`,
+    "",
+    p.telegramHasPlan
+      ? "Если разрешить, этот браузер получит полный доступ к вашему плану, остатку и операциям."
+      : "Если разрешить, браузер и бот будут работать с одним общим планом.",
+    "Разрешайте, только если вы сами только что нажали «Связать с Telegram». Если ссылку прислал кто-то другой, нажмите «Отклонить».",
+    "",
+    "Разрешить доступ браузеру?",
+  ].filter((x) => x != null).join("\n");
+}
+
+export function createBot(token = requireTelegramBotToken(), opts: { botInfo?: UserFromGetMe; rethrow?: boolean } = {}) {
   const bot = new Bot(token, opts.botInfo ? { botInfo: opts.botInfo } : undefined);
 
   // Финансовые данные — только в личном чате.
@@ -31,9 +54,11 @@ export function createBot(token = telegramBotToken()!, opts: { botInfo?: UserFro
 
   const userOf = (ctx: Context) => telegramUserId(ctx.from!.id);
 
+  // Deep link и /link ничего не одобряют: только показывают запрос и кнопки (защита от фишинговой ссылки).
   async function linkFlow(ctx: Context, code: string) {
-    const r = await approveLink(code, ctx.from!.id);
-    await ctx.reply(LINK_REPLY[r]);
+    const p = await previewLink(code, ctx.from!.id);
+    if (p.status !== "ok") { await ctx.reply(LINK_REPLY[p.status]); return; }
+    await ctx.reply(linkPreviewText(p), { reply_markup: new InlineKeyboard().text("Разрешить", `la:${p.id}`).text("Отклонить", `ld:${p.id}`) });
   }
 
   bot.command("start", async (ctx) => {
@@ -73,6 +98,21 @@ export function createBot(token = telegramBotToken()!, opts: { botInfo?: UserFro
     if (r.proposal) return ctx.reply(r.reply, { reply_markup: proposalKeyboard(r.proposal) });
     return ctx.reply(r.reply);
   }
+
+  bot.on("callback_query:data", async (ctx, next) => {
+    const data = ctx.callbackQuery.data;
+    const lm = data.match(/^l([ad]):([0-9a-f-]{36})$/i);
+    if (!lm) return next();
+    if (lm[1] === "a") {
+      const r = await approveLink(lm[2], ctx.from.id);
+      await ctx.answerCallbackQuery({ text: r === "approved" ? "Доступ разрешён" : "Запрос недоступен" });
+      await ctx.editMessageText(r === "invalid" ? "Этот запрос недоступен. Создайте новый в приложении." : LINK_REPLY[r]).catch(() => {});
+      return;
+    }
+    const ok = await denyLink(lm[2], ctx.from.id);
+    await ctx.answerCallbackQuery({ text: ok ? "Отклонено" : "Запрос недоступен" });
+    await ctx.editMessageText(ok ? "Отклонено. Браузер не получит доступ к вашим финансам." : "Этот запрос уже недоступен.").catch(() => {});
+  });
 
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
@@ -128,13 +168,25 @@ export function createBot(token = telegramBotToken()!, opts: { botInfo?: UserFro
     try { await enforce([LIMITS.sttPerUser((await userOf(ctx))!)]); }
     catch { return ctx.reply("Давайте сделаем небольшую паузу, через минуту продолжим."); }
     try {
+      const declared = ctx.message.voice?.file_size ?? ctx.message.audio?.file_size ?? 0;
+      if (declared > MAX_VOICE_BYTES) return ctx.reply("Голосовое слишком большое. Попробуйте покороче или напишите текстом.");
       const file = await ctx.getFile();
+      if (!file.file_path || (file.file_size ?? 0) > MAX_VOICE_BYTES) return ctx.reply("Голосовое слишком большое. Попробуйте покороче или напишите текстом.");
       const res = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`, { signal: AbortSignal.timeout(20_000) });
-      const text = await transcribe(await res.blob(), "voice.ogg");
+      if (!res.ok) throw new Error(`telegram file ${res.status}`);
+      const len = Number(res.headers.get("content-length") ?? 0);
+      if (len > MAX_VOICE_BYTES) return ctx.reply("Голосовое слишком большое. Попробуйте покороче или напишите текстом.");
+      const buf = await res.arrayBuffer();
+      if (buf.byteLength > MAX_VOICE_BYTES) return ctx.reply("Голосовое слишком большое. Попробуйте покороче или напишите текстом.");
+      const text = await transcribe(new Blob([buf], { type: "audio/ogg" }), "voice.ogg");
       await ctx.reply(`Я услышал: "${text}"`);
       await handle(ctx, text);
-    } catch (e) { await ctx.reply("Не получилось распознать голосовое. Попробуйте ещё раз или напишите текстом."); console.error("voice error", (e as Error).message?.replace(/bot[^/]+\//, "bot***/")); }
+    } catch (e) { await ctx.reply("Не получилось распознать голосовое. Попробуйте ещё раз или напишите текстом."); console.error("voice error", { name: (e as Error)?.name }); }
   });
-  bot.catch((e) => console.error("bot error", (e.error as Error)?.message));
+  // В лог — только тип и код ошибки: сообщения могут содержать текст пользователя или токен.
+  bot.catch((e) => {
+    console.error("bot error", { name: (e.error as Error)?.name, code: (e.error as { code?: string })?.code, update: e.ctx?.update?.update_id });
+    if (opts.rethrow) throw e.error; // вебхук: апдейт останется необработанным и будет повторён (lib/telegram-webhook.ts)
+  });
   return bot;
 }

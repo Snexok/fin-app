@@ -6,7 +6,7 @@ import { getForecast, recentEntries } from "../lib/finance-service";
 import { answer } from "../lib/coach";
 import { NOW, webUser } from "./helpers";
 
-type Call = { method: string; payload: Record<string, any> }; // eslint-disable-line @typescript-eslint/no-explicit-any
+type Call = { method: string; payload: Record<string, any> };  
 const calls: Call[] = [];
 const bot = createBot("123456:TEST", { botInfo: { id: 123456, is_bot: true, first_name: "Можно", username: "mozhno_test_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } as never });
 bot.api.config.use(async (_prev, method, payload) => {
@@ -49,13 +49,32 @@ describe("telegram bot", () => {
     expect(lastText()).toContain("Такого кода нет");
     const link = await startLink(web.userId, new Date());
     await msg(50002, `/start link_${link.code}`);
-    expect(lastText()).toContain("Код принят");
+    // Deep link не одобряет сам: показывает контекст и кнопки.
+    const sent = [...calls].reverse().find((c) => c.method === "sendMessage")!;
+    expect(sent.payload.text).toContain("Разрешить доступ браузеру?");
+    const [allow, deny] = sent.payload.reply_markup.inline_keyboard[0].map((b: { callback_data: string }) => b.callback_data);
+    expect(allow).toBe(`la:${link.id}`);
+    expect(deny).toBe(`ld:${link.id}`);
+    await tap(50099, allow); // чужое нажатие ничего не одобряет
+    expect(lastText()).toContain("недоступен");
+    await tap(50002, allow);
+    expect(lastText()).toContain("Доступ разрешён");
+  });
+
+  it("deny button cancels the link request", async () => {
+    const web = await webUser();
+    const link = await startLink(web.userId, new Date());
+    await msg(50007, `/link ${link.code}`);
+    await tap(50007, `ld:${link.id}`);
+    expect(lastText()).toContain("Браузер не получит доступ");
+    await msg(50007, `/start link_${link.code}`);
+    expect(lastText()).toContain("уже использован");
   });
 
   it("expense proposal with buttons; double tap records once; same numbers as web", async () => {
     const id = 50003;
     await msg(id, "/start");
-    for (const t of ["60000", "25.10.2030 80000", "нет", "0", "нет", "не знаю"]) await msg(id, t);
+    for (const t of ["60000", "25.06.2027 80000", "нет", "0", "нет", "не знаю"]) await msg(id, t);
     await msg(id, "Потратил 500 на кофе");
     const sent = [...calls].reverse().find((c) => c.method === "sendMessage")!;
     expect(sent.payload.text).toContain("Записать расход");
@@ -75,7 +94,7 @@ describe("telegram bot", () => {
   it("someone else's button does nothing", async () => {
     const owner = 50004, stranger = 50005;
     await msg(owner, "/start");
-    for (const t of ["1000", "25.10.2030 80000", "нет", "0", "нет", "не знаю"]) await msg(owner, t);
+    for (const t of ["1000", "25.06.2027 80000", "нет", "0", "нет", "не знаю"]) await msg(owner, t);
     await msg(owner, "Потратил 100 на чай");
     const sent = [...calls].reverse().find((c) => c.method === "sendMessage")!;
     const button = sent.payload.reply_markup.inline_keyboard[0][0].callback_data as string;
