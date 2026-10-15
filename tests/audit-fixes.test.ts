@@ -5,6 +5,9 @@ import { getForecast, savePlan, simulate } from "../lib/finance-service";
 import { confirmProposal, createEntryProposal } from "../lib/proposals";
 import { answer, onboardingStep, startOnboarding } from "../lib/coach";
 import { getState } from "../lib/conversation";
+import { parseDate, parsePaymentLines } from "../lib/parse";
+import { createAnonymousSession, touchSession, userIdForSessionToken } from "../lib/auth";
+import { pendingInboxEvents, recordInboxEvent } from "../lib/inbox";
 import { readJson } from "../lib/api";
 import { clientIp } from "../lib/rate-limit";
 import { telegramBotToken } from "../lib/telegram-token";
@@ -179,5 +182,35 @@ describe("Medium fixes", () => {
     const st = await getState<{ onboarding: { step: number } }>(userId, "telegram");
     expect(st!.onboarding.step).toBe(1);
     expect([a.reply, b.reply].some((r) => r.includes("несколько сообщений"))).toBe(true);
+  });
+});
+
+describe("Codex review follow-ups", () => {
+  it("replayed Telegram update does not advance onboarding twice", async () => {
+    const { userId } = await webUser(null);
+    await startOnboarding(userId, "telegram");
+    await onboardingStep(userId, "1000", { now: NOW, updateId: 501 });
+    await onboardingStep(userId, "25.11 80000", { now: NOW, updateId: 502 });
+    const again = await onboardingStep(userId, "25.11 80000", { now: NOW, updateId: 502 }); // повтор после сбоя отправки
+    expect(again.reply).toContain("обязательные платежи");
+    expect((await getState<{ onboarding: { step: number } }>(userId, "telegram"))!.onboarding.step).toBe(2);
+  });
+  it("money token is not parsed as a date; ambiguous payment lines are refused", () => {
+    expect(parseDate("Потратил 10.12 ₽ на кофе", "2026-10-16", { prefer: "past" })).toBeNull();
+    expect(parsePaymentLines("Аренда 100 или 500 20.10", "2026-10-16").errors).toHaveLength(1);
+  });
+  it("absolute session lifetime is 180 days even with renewals", async () => {
+    const s = await createAnonymousSession(NOW);
+    let t = NOW;
+    for (let i = 0; i < 12; i++) { t = new Date(t.getTime() + 20 * 86_400_000); await touchSession(s.token, t); }
+    expect(await userIdForSessionToken(s.token, new Date(NOW.getTime() + 181 * 86_400_000))).toBeNull();
+  });
+  it("stale or exhausted inbox events are closed terminally", async () => {
+    await recordInboxEvent("telegram:9", "77", { update_id: 77 });
+    await (await getDb()).query("UPDATE inbox SET received_at = now() - interval '2 days' WHERE source_event_id='77'");
+    expect(await pendingInboxEvents("telegram:9")).toEqual([]);
+    const row = (await (await getDb()).query<{ processed_at: Date | null; last_error: string }>("SELECT processed_at, last_error FROM inbox WHERE source_event_id='77'")).rows[0];
+    expect(row.processed_at).not.toBeNull();
+    expect(row.last_error).toContain("GAVE_UP");
   });
 });
