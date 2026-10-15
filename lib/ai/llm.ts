@@ -1,6 +1,6 @@
 // LLM только понимает запрос и объясняет готовые числа. Расчёты делает lib/engine.
 import { z } from "zod";
-import { generateObject, generateText } from "ai";
+import { generateObject } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 
 export function llmEnabled() { return !!(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY); }
@@ -10,7 +10,8 @@ function model() {
     apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY,
     baseURL: process.env.LLM_BASE_URL || undefined, // любой OpenAI-совместимый провайдер
   });
-  return openai(process.env.LLM_MODEL || "gpt-4o-mini");
+  // Chat Completions: совместимо с любыми OpenAI-совместимыми провайдерами (LLM_BASE_URL).
+  return openai.chat(process.env.LLM_MODEL || "gpt-4o-mini");
 }
 
 const IntentSchema = z.object({
@@ -33,22 +34,6 @@ export async function parseIntentLLM(text: string): Promise<LlmIntent> {
     abortSignal: AbortSignal.timeout(TIMEOUT_MS),
   });
   return object;
-}
-
-/**
- * Короткое спокойное вступление к ответу. Финансовые факты формирует шаблон (§6.4),
- * поэтому вступление с цифрами отклоняется.
- */
-export async function introLLM(question: string, summaryCode: string): Promise<string | null> {
-  const { text } = await generateText({
-    model: model(),
-    system: "Ты спокойный, доброжелательный помощник приложения \"Можно?\". Напиши одно короткое тёплое вступление по-русски (до 15 слов) без цифр, сумм, дат и оценок поведения. Решение принимает пользователь.",
-    prompt: `Вопрос: ${question.slice(0, 500)}\nИтог расчёта: ${summaryCode}`,
-    abortSignal: AbortSignal.timeout(TIMEOUT_MS),
-  });
-  const t = text.trim();
-  if (!t || /\d/.test(t) || t.length > 160) return null;
-  return t;
 }
 
 /** Распознавание речи через OpenAI-совместимый API. */
