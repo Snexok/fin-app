@@ -15,17 +15,20 @@ const norm = (t: string) => t.toLowerCase().replace(/[\u00a0\u202f]/g, " ").repl
 export function stripDates(text: string): string {
   return norm(text)
     .replace(/\d{4}-\d{2}-\d{2}/g, " ")
-    .replace(new RegExp(`(?<![\\d.,])\\d{1,2}[./]\\d{1,2}(?:[./]\\d{2,4})?(?![\\d]|[.,]\\d|\\s*(?:млн|миллион|тыс|т\\.?р|к(?![${L}])|k(?![${L}])))`, "g"), " ")
+    // ДД.ММ(.ГГГГ) вырезается, только если это возможная дата: "15.50" и "15.10 ₽" остаются суммами.
+    .replace(new RegExp(`(?<![\\d.,])(\\d{1,2})[./](\\d{1,2})(?:[./]\\d{2,4})?(?![\\d]|[.,]\\d|\\s*(?:млн|миллион|тыс|т\\.?р|к(?![${L}])|k(?![${L}])|₽|руб|р\\.|р(?![${L}])))`, "g"),
+      (m, d, mo) => (+d >= 1 && +d <= 31 && +mo >= 1 && +mo <= 12 ? " " : m))
     .replace(new RegExp(`(?<![\\d])\\d{1,2}\\s+${MONTH_RE}(?:\\s+${YEAR_RE})?`, "g"), " ")
     .replace(/(?<!\d)\d{1,2}(?:-?го|\s*числа)/g, " ")
     .replace(/через\s+\d+\s*(?:дн[а-я]*|день|недел[а-я]*)/g, " ");
 }
 
-export interface AmountCandidate { minor: Minor; negative: boolean; raw: string; index: number; hasUnit: boolean; priceCue: boolean; afterLatinWord: boolean }
+export interface AmountCandidate { minor: Minor; negative: boolean; raw: string; index: number; hasUnit: boolean; priceCue: boolean; afterLatinWord: boolean; badPrecision: boolean }
 export interface AmountParse { minor: Minor | null; negative: boolean; ambiguous: boolean; candidates: AmountCandidate[]; error?: string }
 
 const AMOUNT_RE = new RegExp(
-  `(?<![${L}\\d.,])(-\\s*)?(\\d{1,3}(?: \\d{3})+|\\d+)(?:[.,](\\d{1,2}))?(?!\\d)\\s*` +
+  // Целая часть: группы по 3 через пробел или точку ("1 234", "1.234"), иначе подряд. Дробная — любой длины, >2 знаков = ошибка точности.
+  `(?<![${L}\\d.,])(-\\s*)?(\\d{1,3}(?:[ .]\\d{3})+(?!\\d)|\\d+)(?:[.,](\\d+))?(?!\\d)\\s*` +
   `(тыс[${L}]*\\.?|т\\.?\\s?р\\.?|млн\\.?|миллион[${L}]*|к(?![${L}])|k(?![${L}])|₽|руб[${L}]*\\.?|р\\.(?![${L}])|р(?![${L}]))?`,
   "g",
 );
@@ -37,7 +40,9 @@ export function amountCandidates(text: string): AmountCandidate[] {
   const out: AmountCandidate[] = [];
   for (const m of t.matchAll(AMOUNT_RE)) {
     const unit = (m[4] ?? "").trim();
-    let minor = BigInt(m[2].replace(/ /g, "")) * 100n + BigInt((m[3] ?? "0").padEnd(2, "0"));
+    const frac = m[3] ?? "";
+    const badPrecision = frac.length > 2;
+    let minor = BigInt(m[2].replace(/[ .]/g, "")) * 100n + BigInt(badPrecision ? "0" : frac.padEnd(2, "0"));
     if (/^(тыс|т\.?\s?р|к|k)/.test(unit)) minor *= 1000n;
     else if (/^(млн|миллион)/.test(unit)) minor *= 1_000_000n;
     const before = t.slice(0, m.index);
@@ -46,6 +51,7 @@ export function amountCandidates(text: string): AmountCandidate[] {
       hasUnit: unit.length > 0,
       priceCue: PRICE_CUE.test(before),
       afterLatinWord: /[a-z]+\s*$/.test(before),
+      badPrecision,
     });
   }
   return out;
@@ -61,12 +67,14 @@ export function parseAmountDetailed(text: string): AmountParse {
   const cued = c.filter((x) => x.priceCue);
   const withUnit = c.filter((x) => x.hasUnit);
   const plain = c.filter((x) => !x.afterLatinWord);
-  if (cued.length) chosen = pick(cued);
-  else if (withUnit.length) { chosen = pick(withUnit); ambiguous = withUnit.length > 1; }
+  const distinct = (xs: AmountCandidate[]) => new Set(xs.map((x) => x.minor)).size > 1;
+  if (cued.length) { chosen = pick(cued); ambiguous = distinct(cued); }
+  else if (withUnit.length) { chosen = pick(withUnit); ambiguous = distinct(withUnit); }
   else if (c.length === 1) chosen = c[0];
-  else if (plain.length) { chosen = pick(plain); ambiguous = plain.length > 1; }
+  else if (plain.length) { chosen = pick(plain); ambiguous = distinct(plain); }
   else { chosen = pick(c); ambiguous = true; }
   if (chosen.negative) return { minor: null, negative: true, ambiguous, candidates: c, error: "NEGATIVE_AMOUNT" };
+  if (chosen.badPrecision) return { minor: null, negative: false, ambiguous, candidates: c, error: "BAD_PRECISION" };
   if (chosen.minor > MAX_MINOR) return { minor: null, negative: false, ambiguous, candidates: c, error: "AMOUNT_TOO_LARGE" };
   return { minor: chosen.minor, negative: false, ambiguous, candidates: c };
 }
@@ -80,17 +88,24 @@ export function parseAmount(text: string): number | null {
 }
 
 /** Строгий разбор даты. Невозможные даты (31.02) -> null. "20-го" после 20-го -> следующий месяц. */
-export function parseDate(text: string, today: ISODate): ISODate | null {
+export function parseDate(text: string, today: ISODate, opts: { prefer?: "future" | "past" } = {}): ISODate | null {
   const t = norm(text);
+  const past = opts.prefer === "past";
   if (/сегодня/.test(t)) return today;
+  if (/позавчера/.test(t)) return addDays(today, -2);
+  if (/вчера/.test(t)) return addDays(today, -1);
   if (/послезавтра/.test(t)) return addDays(today, 2);
   if (/завтра/.test(t)) return addDays(today, 1);
   let m = t.match(/через\s+(\d+)\s*(дн|день|недел)/);
   if (m) { const n = Number(m[1]); if (n > 3650) return null; return addDays(today, n * (m[2].startsWith("недел") ? 7 : 1)); }
+  m = t.match(/(\d+)\s*(дн[а-я]*|день|недел[а-я]*)\s+назад/);
+  if (m) { const n = Number(m[1]); if (n > 3650) return null; return addDays(today, -n * (m[2].startsWith("недел") ? 7 : 1)); }
   const [y, mo, dd] = today.split("-").map(Number);
   const withYear = (d: number, month: number, year?: number): ISODate | null => {
     if (year != null) return makeDate(year < 100 ? 2000 + year : year, month, d);
     const cur = makeDate(y, month, d);
+    // Для операций (prefer past) "5 октября" после 5 октября — этот год, до него — прошлый; для планов — наоборот.
+    if (past) return cur && cur <= today ? cur : makeDate(y - 1, month, d);
     if (cur && cur >= today) return cur;
     return makeDate(y + 1, month, d); // 29.02 без года тоже попадёт сюда, если в этом году её нет
   };
@@ -104,6 +119,11 @@ export function parseDate(text: string, today: ISODate): ISODate | null {
   if (m) {
     const d = +m[1];
     if (d < 1 || d > 31) return null;
+    if (past) {
+      if (d <= dd) return makeDate(y, mo, d);
+      const py = mo === 1 ? y - 1 : y, pm = mo === 1 ? 12 : mo - 1;
+      return makeDate(py, pm, d);
+    }
     if (d >= dd && d <= daysInMonth(y, mo)) return makeDate(y, mo, d);
     const ny = mo === 12 ? y + 1 : y, nm = mo === 12 ? 1 : mo + 1;
     return makeDate(ny, nm, d); // 31-го в 30-дневном месяце -> null, лучше уточнить

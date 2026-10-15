@@ -1,6 +1,6 @@
 // Общий диалоговый слой для веба и Telegram. Финансовые факты — из движка, текст — шаблоны (§6.4).
 import {
-  formatRub, forecastToSnapshot, localDate, simulationToImpact,
+  addDays, formatRub, forecastToSnapshot, FUTURE_WINDOW_DAYS, GOAL_FUTURE_DAYS, localDate, PAST_WINDOW_DAYS, simulationToImpact,
   type Assessment, type Forecast, type ISODate, type Minor, type PurchaseImpact, type Scenario, type Simulation, type Snapshot,
 } from "./engine";
 import { amountCandidates, parseAmountDetailed, parseDate, parseIntentRegex, parsePaymentLines, toNominative, type PurchaseIntent } from "./parse";
@@ -12,6 +12,8 @@ import { createEntryProposal, matchOccurrence, type ProposalView } from "./propo
 import { getState, setState, type Channel } from "./conversation";
 
 const rub = (m: Minor) => formatRub(m);
+/** Суммы, которые пользователь подтверждает (цена, запись, остаток после), показываются с копейками, если они есть. */
+const rubExact = (m: Minor) => formatRub(m, { kopecks: true });
 const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
 export const humanDate = (d: ISODate) => `${+d.slice(8, 10)} ${MONTHS_GEN[+d.slice(5, 7) - 1]}`;
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -56,8 +58,8 @@ export function purchaseText(sim: Simulation): string {
   const n = sim.now, b = sim.baseline;
   const unknownEssential = b.limitations.includes("ESSENTIAL_SPENDING_UNKNOWN");
   const lines = [unknownEssential && (n.assessment === "fits_plan" || n.assessment === "reduces_daily_margin")
-    ? `Похоже, можно: ${sim.item} за ${rub(n.priceMinor)} укладывается в план, если на еду, транспорт и другие нужды хватит около ${rub(n.safeDailyAfterMinor)} в день.`
-    : HEAD[n.assessment](sim.item, rub(n.priceMinor))];
+    ? `Похоже, можно: ${sim.item} за ${rubExact(n.priceMinor)} укладывается в план, если на еду, транспорт и другие нужды хватит около ${rub(n.safeDailyAfterMinor)} в день.`
+    : HEAD[n.assessment](sim.item, rubExact(n.priceMinor))];
   lines.push(`Сейчас: около ${rub(b.safeDailyMinor)} в день до ${humanDate(b.horizonEnd)}.`);
   lines.push(`Если купить сейчас: ${scenarioLine(n)}.`);
   const a = sim.afterIncome;
@@ -73,11 +75,11 @@ export function purchaseText(sim: Simulation): string {
 
 export function proposalText(p: ProposalView, balanceAfter: Minor | null, occurrenceName: string | null): string {
   const pl = p.payload;
-  const what = pl.direction === "expense" ? `расход «${pl.description}» на ${rub(pl.amountMinor)}` : `поступление «${pl.description}» ${rub(pl.amountMinor)}`;
+  const what = pl.direction === "expense" ? `расход «${pl.description}» на ${rubExact(pl.amountMinor)}` : `поступление «${pl.description}» ${rubExact(pl.amountMinor)}`;
   const when = `, ${humanDate(pl.date)}`;
   let t = `Записать ${what}${when}?`;
   if (occurrenceName) t += ` Отмечу как ${pl.direction === "expense" ? "оплату" : "поступление"} «${occurrenceName}».`;
-  if (balanceAfter != null) t += ` Остаток станет ${rub(balanceAfter)}.`;
+  if (balanceAfter != null) t += ` Остаток станет ${rubExact(balanceAfter)}.`;
   return t + " Подтвердите, и я пересчитаю план.";
 }
 
@@ -114,7 +116,8 @@ function intentFromLlm(text: string, o: Awaited<ReturnType<typeof parseIntentLLM
   }
   if (priceMinor == null) priceMinor = regex.priceMinor;
   const item = o.item ? toNominative(o.item) : regex.item;
-  return { intent: o.intent, item, priceMinor, price: priceMinor == null ? undefined : Number(priceMinor) / 100 };
+  // Неоднозначность детерминированного разбора не снимается выбором модели: переспрашиваем.
+  return { intent: o.intent, item, priceMinor, price: priceMinor == null ? undefined : Number(priceMinor) / 100, ambiguous: regex.ambiguous };
 }
 
 export async function answer(userId: string, rawText: string, opts: { now?: Date; channel?: Channel } = {}): Promise<ChatResult> {
@@ -135,6 +138,13 @@ export async function answer(userId: string, rawText: string, opts: { now?: Date
   const base = { mode, snapshot: forecastToSnapshot(view.forecast), forecast: view.forecast, meta: view.meta };
 
   if (intent.error === "NEGATIVE_AMOUNT") return { ...base, reply: "Сумма получилась отрицательной. Назовите её без минуса, пожалуйста." };
+  if (intent.error === "BAD_PRECISION") return { ...base, reply: "Не понял сумму: после запятой бывает не больше двух знаков (копейки). Напишите, например, 1234 или 1234,50." };
+  if (intent.error === "AMOUNT_TOO_LARGE") return { ...base, reply: "Сумма слишком большая. Проверьте, пожалуйста, число." };
+  const moneyIntent = intent.intent === "purchase" || intent.intent === "expense" || intent.intent === "income";
+  if (moneyIntent && intent.ambiguous) {
+    const vals = [...new Set(amountCandidates(text).filter((c) => !c.negative).map((c) => c.minor))].slice(0, 4).map(rubExact);
+    return { ...base, reply: `В сообщении несколько сумм (${vals.join(", ")}). Какую записать или проверить? Напишите одну сумму, например: «Потратил 500 на кофе».` };
+  }
 
   if (intent.intent === "purchase") {
     if (intent.priceMinor == null || intent.priceMinor <= 0n) {
@@ -167,8 +177,10 @@ export async function answer(userId: string, rawText: string, opts: { now?: Date
       if (pending.length === 1) occ = { id: pending[0].id, name: pending[0].name };
     }
     if (amount == null || amount <= 0n) return { ...base, reply: direction === "expense" ? "Сколько потратили? Назовите сумму, и я подготовлю запись." : "Сколько пришло? Назовите сумму, и я подготовлю запись." };
-    const dateText = parseDate(text, today);
-    const date = dateText && dateText <= today ? dateText : today;
+    const dateText = parseDate(text, today, { prefer: "past" });
+    if (dateText && dateText > today) return { ...base, reply: "Эта дата ещё не наступила. Записываю только уже совершённые операции; будущие платежи добавьте в план." };
+    if (dateText && dateText < addDays(today, -PAST_WINDOW_DAYS)) return { ...base, reply: "Эта дата слишком давно. Можно записать операции не старше года." };
+    const date = dateText ?? today;
     const proposal = await createEntryProposal(userId, { direction, amountMinor: amount, date, description, occurrenceId: occ?.id ?? null, source: channel === "telegram" ? "telegram" : "chat" }, now);
     const after = view.book.balanceMinor + (direction === "expense" ? -amount : amount);
     return { ...base, reply: proposalText(proposal, after, occ?.name ?? null), proposal };
@@ -193,6 +205,11 @@ export const ONBOARDING_STEPS = STEPS.length;
 
 interface OnboardingDraft {
   step: number;
+  /** Версия для compare-and-set: два одновременных сообщения не продвинут шаг дважды. */
+  rev?: number;
+  /** finance_version на старте онбординга (null — бюджета не было). */
+  base?: string | null;
+  saving?: boolean;
   balanceMinor?: string; incomeMinor?: string; incomeDate?: string;
   payments?: { name: string; amountMinor: string; date: string }[];
   reserveMinor?: string;
@@ -200,9 +217,12 @@ interface OnboardingDraft {
 }
 
 export async function startOnboarding(userId: string, channel: Channel = "telegram") {
-  await setState(userId, channel, { onboarding: { step: 0 } });
+  const v = await getForecast(userId);
+  await setState(userId, channel, { onboarding: { step: 0, rev: 0, base: v ? v.book.financeVersion.toString() : null } });
   return ONBOARDING_FIRST;
 }
+
+const inWindow = (d: ISODate, today: ISODate, futureDays = FUTURE_WINDOW_DAYS) => d >= addDays(today, -PAST_WINDOW_DAYS) && d <= addDays(today, futureDays);
 
 export async function onboardingActive(userId: string, channel: Channel = "telegram"): Promise<boolean> {
   const s = await getState<{ onboarding?: OnboardingDraft }>(userId, channel);
@@ -214,7 +234,10 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
   const channel = opts.channel ?? "telegram";
   const today = localDate(now, opts.timezone ?? (await userTimezone(await getDb(), userId)));
   const st = (await getState<{ onboarding?: OnboardingDraft }>(userId, channel))?.onboarding ?? { step: 0 };
-  const d = st;
+  const d: OnboardingDraft = { ...st };
+  const rev = st.rev ?? 0;
+  if (st.saving) return { reply: "Сохраняю план, секунду…", done: false };
+  const busy = { reply: "Получил несколько сообщений подряд. Ответьте, пожалуйста, ещё раз на вопрос:\n" + STEPS[st.step], done: false };
   const t = text.trim().slice(0, 2000);
   const amount = (s: string) => parseAmountDetailed(s);
   switch (d.step) {
@@ -223,10 +246,12 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
       const date = parseDate(t, today);
       const a = amount(t);
       if (!date || a.minor == null || a.minor <= 0n) return { reply: "Нужны и дата, и сумма. Например: 25.10 80000. Дату дохода я не угадываю.", done: false };
+      if (!inWindow(date, today)) return { reply: `Дата дохода должна быть в пределах года, не позже ${humanDate(addDays(today, FUTURE_WINDOW_DAYS))}.`, done: false };
       d.incomeDate = date; d.incomeMinor = a.minor.toString(); break;
     }
     case 2: {
       const r = parsePaymentLines(t, today);
+      r.items = r.items.filter((p) => { if (inWindow(p.date, today)) return true; r.errors.push({ line: 0, text: p.name, reason: "дата дальше чем через год" }); return false; });
       if (r.errors.length) return { reply: "Не все строки получилось понять:\n" + r.errors.map((e) => `• «${e.text}»: ${e.reason}`).join("\n") + "\nНапишите платежи ещё раз в формате: Аренда 30000 20.10, или \"нет\".", done: false };
       d.payments = r.items.map((p) => ({ name: p.name, amountMinor: p.amountMinor.toString(), date: p.date })); break;
     }
@@ -237,6 +262,7 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
         const date = parseDate(t, today);
         const a = amount(t);
         if (!date || a.minor == null || a.minor <= 0n) return { reply: "Укажите цель так: Отпуск 60000 01.06.2027, или \"нет\".", done: false };
+        if (!inWindow(date, today, GOAL_FUTURE_DAYS)) return { reply: "Дата цели должна быть в пределах десяти лет.", done: false };
         d.goal = { name: t.replace(/[-−]?\s*\d.*$/, "").trim() || "Цель", amountMinor: a.minor.toString(), date };
       }
       break;
@@ -252,15 +278,43 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
         balanceMinor: BigInt(d.balanceMinor!), reserveMinor: BigInt(d.reserveMinor ?? "0"), essentialDailyMinor: essential,
         incomes: [{ name: "Доход", amountMinor: BigInt(d.incomeMinor!), dueOn: d.incomeDate! }],
         payments: (d.payments ?? []).map((p) => ({ name: p.name, amountMinor: BigInt(p.amountMinor), dueOn: p.date })),
-        goal: d.goal ? { name: d.goal.name, targetMinor: BigInt(d.goal.amountMinor), targetDate: d.goal.date, savedMinor: 0n, savedInBalance: false } : null,
+        // savedMinor не задаём: накопления по существующей цели сохраняются.
+        goal: d.goal ? { name: d.goal.name, targetMinor: BigInt(d.goal.amountMinor), targetDate: d.goal.date } : null,
       };
-      await savePlan(userId, plan, channel === "telegram" ? "telegram" : "chat", now);
+      if (!(await casOnboarding(userId, channel, rev, { ...d, rev: rev + 1, saving: true }))) return busy;
+      try {
+        await savePlan(userId, plan, channel === "telegram" ? "telegram" : "chat", now, { baseFinanceVersion: d.base == null ? null : BigInt(d.base), requireBase: true });
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        if (code === "FINANCE_VERSION_CONFLICT") {
+          const first = await startOnboarding(userId, channel);
+          return { reply: "Пока мы заполняли план, данные изменились (например, записалась трата в приложении). Чтобы ничего не потерять, давайте проверим остаток заново.\n\n" + first, done: false };
+        }
+        await casOnboarding(userId, channel, rev + 1, { ...d, rev: rev + 2, saving: false });
+        if (code === "INVALID_DATE" || code === "INVALID_AMOUNT" || code === "INVALID_INPUT") return { reply: "Не получилось сохранить план: " + (e as Error).message + ". Нажмите /setup, чтобы заполнить заново.", done: false };
+        throw e;
+      }
       await setState(userId, channel, null);
       const v = await getForecast(userId, now);
       return { reply: "Готово, план сохранён.\n" + snapshotText(v!.forecast) + "\n\nТеперь можно спросить: \"Можно купить наушники за 15000?\" Текстом или голосом.", done: true };
     }
   }
   d.step += 1;
-  await setState(userId, channel, { onboarding: d });
+  d.rev = rev + 1;
+  if (!(await casOnboarding(userId, channel, rev, d))) return busy;
   return { reply: STEPS[d.step], done: false };
+}
+
+/** Compare-and-set шага онбординга по rev: проигравшее параллельное сообщение ничего не меняет. */
+async function casOnboarding(userId: string, channel: Channel, expectedRev: number, next: OnboardingDraft): Promise<boolean> {
+  const db = await getDb();
+  const r = await db.query(
+    `UPDATE conversation_state SET state=$3, updated_at=now()
+      WHERE user_id=$1 AND channel=$2 AND COALESCE((state->'onboarding'->>'rev')::int, 0) = $4 RETURNING user_id`,
+    [userId, channel, JSON.stringify({ onboarding: next }), expectedRev]);
+  if (r.rows.length) return true;
+  // Состояния ещё нет (онбординг начат без startOnboarding): создаём, если никто не успел раньше.
+  if (expectedRev !== 0) return false;
+  const ins = await db.query("INSERT INTO conversation_state(user_id, channel, state) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING user_id", [userId, channel, JSON.stringify({ onboarding: next })]);
+  return ins.rows.length > 0;
 }
