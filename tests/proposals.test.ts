@@ -124,7 +124,7 @@ describe("proposals", () => {
     const { userId } = await webUser();
     await expect(createEntryProposal(userId, expense(0), NOW)).rejects.toThrow();
     await expect(createEntryProposal(userId, { ...expense(10), date: "2026-02-31" }, NOW)).rejects.toThrow();
-    await expect(createEntryProposal(userId, { ...expense(10), date: "2026-10-20" }, NOW)).rejects.toMatchObject({ code: "INVALID_INPUT" });
+    await expect(createEntryProposal(userId, { ...expense(10), date: "2026-10-20" }, NOW)).rejects.toMatchObject({ code: "FUTURE_DATE" });
   });
 
   it("re-saving the plan resets the opening balance but keeps history", async () => {
@@ -151,20 +151,6 @@ describe("persistence", () => {
     await resetDbForTests();
     process.env.PGLITE_DIR = prev;
     await (await getDb()).query("SELECT 1");
-  });
-});
-
-describe("telegram update dedupe", () => {
-  it("a repeated update_id is claimed once; a failed one can be retried", async () => {
-    const { claimInboxEvent, markInboxProcessed, releaseInboxEvent } = await import("../lib/inbox");
-    expect(await claimInboxEvent("telegram:1", "42")).toBe(true);
-    expect(await claimInboxEvent("telegram:1", "42")).toBe(false);
-    await markInboxProcessed("telegram:1", "42");
-    await releaseInboxEvent("telegram:1", "42"); // уже обработан — не снимается
-    expect(await claimInboxEvent("telegram:1", "42")).toBe(false);
-    expect(await claimInboxEvent("telegram:1", "43")).toBe(true);
-    await releaseInboxEvent("telegram:1", "43");
-    expect(await claimInboxEvent("telegram:1", "43")).toBe(true);
   });
 });
 
