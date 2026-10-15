@@ -9,6 +9,7 @@ __pycache__/
 # Credentials and editor settings.
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 .idea/
@@ -18,3 +19,10 @@ __pycache__/
 ~$*
 *.tmp
 *.swp
+.data
+node_modules
+.next
+.env*.local
+next-env.d.ts
+*.tsbuildinfo
+.next-*
