@@ -4,6 +4,8 @@ import { assertNonNegativeAmount, floorDiv, maxBig, minBig, type Minor } from ".
 import { ENGINE_VERSION, type Forecast, type ForecastInput, type Gap, type Limitation, type OccurrenceInput } from "./types";
 
 export const DEFAULT_PLANNING_DAYS = 30;
+/** Предел горизонта расчёта: цикл по дням не может стать DoS-вектором при далёких датах. */
+export const MAX_HORIZON_DAYS = 400;
 
 /** Непогашенная часть: planned - settled (с учётом сторно), не меньше нуля. */
 export function remainingOf(plannedMinor: Minor, settlementsMinor: Minor[]): Minor {
@@ -40,13 +42,18 @@ export function forecast(input: ForecastInput): Forecast {
   const essential = input.essentialDailyMinor == null ? null : assertNonNegativeAmount(input.essentialDailyMinor, "essentialDaily");
   for (const o of input.occurrences) { assertDate(o.dueOn, "dueOn"); assertNonNegativeAmount(o.remainingMinor, "occurrence"); }
 
-  const { end, kind } = resolveHorizon(input);
+  const resolved = resolveHorizon(input);
+  const { kind } = resolved;
+  let end = resolved.end;
   if (end < today) throw new RangeError("Горизонт раньше сегодняшнего дня");
   const limitations = new Set<Limitation>();
+  if (diffDays(today, end) >= MAX_HORIZON_DAYS) { end = addDays(today, MAX_HORIZON_DAYS - 1); limitations.add("HORIZON_CAPPED"); }
   const assumptions: string[] = [
     "Доход с неизвестным временем поступает в конце дня; платежи и траты этого дня идут раньше.",
   ];
   if (kind === "planning_period") { limitations.add("INCOME_UNKNOWN"); assumptions.push(`Ближайший доход неизвестен: выбран период планирования до ${end}.`); }
+  if (limitations.has("HORIZON_CAPPED")) assumptions.push(`Горизонт расчёта ограничен ${MAX_HORIZON_DAYS} днями, до ${end}.`);
+  if (input.extraCharges && input.extraCharges.length > 1000) throw new RangeError("Слишком много дополнительных платежей");
 
   // Доходы
   const incomes = input.occurrences.filter((o) => includedIncome(o, input.scenario));

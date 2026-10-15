@@ -2,7 +2,7 @@
 // Формул здесь нет — только сбор входов для lib/engine и запись подтверждённых изменений.
 import { getDb, type Queryable } from "./db";
 import {
-  assertDate, assertNonNegativeAmount, assertPositiveAmount, computeBalance, DEFAULT_TZ, ENGINE_VERSION, forecast, localDate,
+  assertDate, assertDateWithin, assertNonNegativeAmount, GOAL_FUTURE_DAYS, MAX_MINOR, assertPositiveAmount, computeBalance, DEFAULT_TZ, ENGINE_VERSION, forecast, localDate,
   minorToRubles, remainingOf, rublesToMinor, simulatePurchase, simulationToImpact, forecastToSnapshot,
   type Certainty, type Forecast, type ForecastInput, type ISODate, type Minor, type PurchaseRequest, type Simulation,
 } from "./engine";
@@ -131,43 +131,61 @@ export interface PlanInput {
   essentialDailyMinor: Minor | null;
   incomes: { name: string; amountMinor: Minor; dueOn: ISODate; certainty?: Certainty }[];
   payments: { name: string; amountMinor: Minor; dueOn: ISODate }[];
-  goal: null | { name: string; targetMinor: Minor; targetDate: ISODate; savedMinor: Minor; savedInBalance: boolean };
+  /** savedMinor не задан — накопления по существующей цели сохраняются как есть (форма их не редактирует). */
+  goal: null | { name: string; targetMinor: Minor; targetDate: ISODate; savedMinor?: Minor; savedInBalance?: boolean };
 }
 
 const MAX_NAME = 120;
 const cleanName = (s: unknown, fallback: string) => (typeof s === "string" && s.trim() ? s.trim().slice(0, MAX_NAME) : fallback);
 
-export function validatePlan(p: PlanInput): PlanInput {
+export function validatePlan(p: PlanInput, today?: ISODate): PlanInput {
   if (typeof p.balanceMinor !== "bigint") throw new ApiError("INVALID_INPUT", 422, "Нужен текущий остаток");
+  if (p.balanceMinor > MAX_MINOR || p.balanceMinor < -MAX_MINOR) throw new ApiError("INVALID_AMOUNT", 422, "Текущий остаток: слишком большая сумма");
   assertNonNegativeAmount(p.reserveMinor, "Резерв");
   if (p.essentialDailyMinor != null) assertNonNegativeAmount(p.essentialDailyMinor, "Траты в день");
   if (p.incomes.length + p.payments.length > 100) throw new ApiError("INVALID_INPUT", 422, "Слишком много записей");
-  for (const i of p.incomes) { assertPositiveAmount(i.amountMinor, "Доход"); assertDate(i.dueOn, "Дата дохода"); }
-  for (const x of p.payments) { assertPositiveAmount(x.amountMinor, `Платёж ${x.name}`); assertDate(x.dueOn, `Дата платежа ${x.name}`); }
-  if (p.goal) { assertPositiveAmount(p.goal.targetMinor, "Цель"); assertDate(p.goal.targetDate, "Дата цели"); assertNonNegativeAmount(p.goal.savedMinor, "Уже накоплено"); }
+  const d = (v: unknown, field: string, goal = false) => (today ? assertDateWithin(v, today, field, goal ? { futureDays: GOAL_FUTURE_DAYS } : {}) : assertDate(v, field));
+  for (const i of p.incomes) { assertPositiveAmount(i.amountMinor, "Доход"); d(i.dueOn, "Дата дохода"); }
+  for (const x of p.payments) { assertPositiveAmount(x.amountMinor, `Платёж ${x.name}`); d(x.dueOn, `Дата платежа ${x.name}`); }
+  if (p.goal) { assertPositiveAmount(p.goal.targetMinor, "Цель"); d(p.goal.targetDate, "Дата цели", true); if (p.goal.savedMinor != null) assertNonNegativeAmount(p.goal.savedMinor, "Уже накоплено"); }
   return p;
+}
+
+export interface SavePlanOptions {
+  /** finance_version, на которой пользователь открыл форму. Не совпала под блокировкой — 409, ничего не пишется. */
+  baseFinanceVersion?: bigint | null;
+  /** Для формы: при существующем бюджете baseFinanceVersion обязателен. */
+  requireBase?: boolean;
 }
 
 /**
  * Применяет план целиком (явное действие пользователя в форме или после онбординга в боте).
  * Остаток становится новой точкой отсчёта; прежние плановые события отменяются, история операций сохраняется.
+ * Устаревшая форма (версия изменилась, например трата из Telegram) не перезаписывает остаток: 409 FINANCE_VERSION_CONFLICT.
+ * Активная цель обновляется на месте: накопления (аллокации и saved_outside) сохраняются, если план их явно не задаёт.
  */
-export async function savePlan(userId: string, plan: PlanInput, source: "form" | "telegram" | "chat", now = new Date()): Promise<bigint> {
+export async function savePlan(userId: string, plan: PlanInput, source: "form" | "telegram" | "chat", now = new Date(), opts: SavePlanOptions = {}): Promise<bigint> {
   validatePlan(plan);
   const db = await getDb();
   return db.tx(async (q) => {
     // Блокируем строку пользователя: сериализует создание бюджета и привязку аккаунтов (confirmLink).
-    const u = await q.query("SELECT 1 FROM users WHERE id=$1 FOR UPDATE", [userId]);
+    const u = await q.query<{ timezone: string }>("SELECT timezone FROM users WHERE id=$1 FOR UPDATE", [userId]);
     if (!u.rows.length) throw new ApiError("NOT_FOUND", 404, "Аккаунт не найден");
-    const exists = await q.query("SELECT 1 FROM books WHERE user_id=$1 FOR UPDATE", [userId]);
-    if (!exists.rows.length) {
+    validatePlan(plan, localDate(now, u.rows[0].timezone ?? DEFAULT_TZ));
+    const exists = await q.query<{ v: string }>("SELECT finance_version::text AS v FROM books WHERE user_id=$1 FOR UPDATE", [userId]);
+    const current = exists.rows[0] ? big(exists.rows[0].v) : null;
+    if (current != null && (opts.baseFinanceVersion != null || opts.requireBase) && opts.baseFinanceVersion !== current) {
+      const book = await loadBook(q, userId);
+      throw new ApiError("FINANCE_VERSION_CONFLICT", 409, "Пока вы заполняли план, данные изменились (например, записалась трата). Проверьте остаток и сохраните ещё раз.",
+        { financeVersion: current.toString(), balanceMinor: book?.balanceMinor.toString() ?? null });
+    }
+    if (current == null) {
       await q.query("INSERT INTO books(user_id, opening_balance_minor, opening_as_of, reserve_minor, essential_daily_minor, last_reconciled_at) VALUES ($1,$2,clock_timestamp(),$3,$4,$5)",
         [userId, plan.balanceMinor, plan.reserveMinor, plan.essentialDailyMinor, now]);
     } else {
       await q.query("UPDATE books SET opening_balance_minor=$2, opening_as_of=clock_timestamp(), reserve_minor=$4, essential_daily_minor=$5, last_reconciled_at=$3 WHERE user_id=$1",
         [userId, plan.balanceMinor, now, plan.reserveMinor, plan.essentialDailyMinor]);
       await q.query("UPDATE occurrences SET cancelled_at=$2 WHERE user_id=$1 AND cancelled_at IS NULL", [userId, now]);
-      await q.query("UPDATE goals SET status='cancelled' WHERE user_id=$1 AND status='active'", [userId]);
     }
     for (const i of plan.incomes)
       await q.query("INSERT INTO occurrences(id, user_id, direction, name, amount_minor, due_on, certainty) VALUES ($1,$2,'income',$3,$4,$5,$6)",
@@ -175,15 +193,37 @@ export async function savePlan(userId: string, plan: PlanInput, source: "form" |
     for (const x of plan.payments)
       await q.query("INSERT INTO occurrences(id, user_id, direction, name, amount_minor, due_on, certainty) VALUES ($1,$2,'expense',$3,$4,$5,'committed')",
         [uuid(), userId, cleanName(x.name, "Платёж"), x.amountMinor, x.dueOn]);
-    if (plan.goal) {
-      const gid = uuid();
-      await q.query("INSERT INTO goals(id, user_id, name, target_minor, target_date, saved_outside_minor) VALUES ($1,$2,$3,$4,$5,$6)",
-        [gid, userId, cleanName(plan.goal.name, "Цель"), plan.goal.targetMinor, plan.goal.targetDate, plan.goal.savedInBalance ? 0n : plan.goal.savedMinor]);
-      if (plan.goal.savedInBalance && plan.goal.savedMinor > 0n)
-        await q.query("INSERT INTO goal_allocations(id, user_id, goal_id, delta_minor, reason) VALUES ($1,$2,$3,$4,'plan')", [uuid(), userId, gid, plan.goal.savedMinor]);
-    }
+    await saveGoal(q, userId, plan.goal);
     return bumpVersion(q, userId, "plan_saved", null, { source, incomes: plan.incomes.length, payments: plan.payments.length, goal: !!plan.goal });
   });
+}
+
+async function saveGoal(q: Queryable, userId: string, goal: PlanInput["goal"]) {
+  const ex = await q.query<{ id: string; allocated: string }>(
+    `SELECT g.id, COALESCE((SELECT SUM(delta_minor) FROM goal_allocations a WHERE a.user_id=g.user_id AND a.goal_id=g.id),0)::text AS allocated
+       FROM goals g WHERE g.user_id=$1 AND g.status='active' ORDER BY g.priority, g.created_at LIMIT 1 FOR UPDATE OF g`, [userId]);
+  const existing = ex.rows[0];
+  if (!goal) {
+    if (existing) await q.query("UPDATE goals SET status='cancelled' WHERE user_id=$1 AND status='active'", [userId]);
+    return;
+  }
+  const name = cleanName(goal.name, "Цель");
+  let gid: string;
+  if (existing) {
+    gid = existing.id;
+    await q.query("UPDATE goals SET name=$3, target_minor=$4, target_date=$5 WHERE id=$1 AND user_id=$2", [gid, userId, name, goal.targetMinor, goal.targetDate]);
+    // Прочие активные цели (наследие старой логики "отменить и создать") не трогаем, кроме дубликатов.
+    await q.query("UPDATE goals SET status='cancelled' WHERE user_id=$1 AND status='active' AND id<>$2", [userId, gid]);
+    if (goal.savedMinor == null) return; // накопления не редактировались — сохраняем как есть
+  } else {
+    gid = uuid();
+    await q.query("INSERT INTO goals(id, user_id, name, target_minor, target_date, saved_outside_minor) VALUES ($1,$2,$3,$4,$5,0)", [gid, userId, name, goal.targetMinor, goal.targetDate]);
+  }
+  const saved = goal.savedMinor ?? 0n;
+  const inBalance = goal.savedInBalance === true;
+  await q.query("UPDATE goals SET saved_outside_minor=$3 WHERE id=$1 AND user_id=$2", [gid, userId, inBalance ? 0n : saved]);
+  const delta = (inBalance ? saved : 0n) - (existing ? big(existing.allocated) : 0n);
+  if (delta !== 0n) await q.query("INSERT INTO goal_allocations(id, user_id, goal_id, delta_minor, reason) VALUES ($1,$2,$3,$4,'plan')", [uuid(), userId, gid, delta]);
 }
 
 // ---------- Совместимость с /api/profile (рубли) ----------
@@ -216,7 +256,7 @@ export function legacyProfileToPlan(p: Record<string, any>): PlanInput { // esli
     payments,
     goal: g && (g.amount || g.amountMinor) ? {
       name: cleanName(g.name, "Цель"), targetMinor: m("amountMinor", "amount", g, "Цель")!, targetDate: assertDate(g.date, "Дата цели"),
-      savedMinor: m("savedMinor", "saved", g, "Уже накоплено", true) ?? 0n, savedInBalance: g.savedInBalance === true,
+      savedMinor: m("savedMinor", "saved", g, "Уже накоплено", true) ?? undefined, savedInBalance: g.savedInBalance === true,
     } : null,
   };
 }
@@ -251,9 +291,12 @@ export async function simulate(userId: string, req: PurchaseRequest, question: s
   const decisionId = uuid();
   const impact = simulationToImpact(sim, req.priceMinor);
   const result = { assessment: sim.now.assessment, verdict: impact.verdict, waitIsBetter: sim.waitIsBetter, freeAfter: impact.freeAfter, safeDailyAfter: impact.safeDailyAfter };
+  // Исходный текст вопроса хранится только при явном согласии (users.history_enabled). Без него — только итог расчёта.
+  const hist = await db.query<{ history_enabled: boolean }>("SELECT history_enabled FROM users WHERE id=$1", [userId]);
+  const keepText = hist.rows[0]?.history_enabled === true;
   await db.query("INSERT INTO decisions(id, user_id, finance_version, engine_version, as_of_date, input, result) VALUES ($1,$2,$3,$4,$5,$6,$7)", [
     decisionId, userId, book.financeVersion, ENGINE_VERSION, today,
-    JSON.stringify({ question: question?.slice(0, 500) ?? null, item: req.item, priceMinor: req.priceMinor.toString(), date: req.date ?? null }),
+    JSON.stringify({ question: keepText ? question?.slice(0, 500) ?? null : null, item: req.item, priceMinor: req.priceMinor.toString(), date: req.date ?? null }),
     JSON.stringify(result),
   ]);
   return { decisionId, simulation: sim, meta: metaOf(book, sim.baseline, now) };
@@ -278,8 +321,8 @@ export async function listDecisions(userId: string, limit = 50): Promise<History
 export async function recentEntries(userId: string, limit = 20) {
   const db = await getDb();
   const r = await db.query<Record<string, string>>(
-    "SELECT id, kind, amount_minor::text AS amount_minor, name, source, occurrence_id, occurred_at, reversal_of FROM ledger_entries WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2", [userId, limit]);
-  return r.rows.map((e) => ({ id: e.id, kind: e.kind, amountMinor: e.amount_minor, name: e.name, source: e.source, occurrenceId: e.occurrence_id, occurredAt: new Date(e.occurred_at).toISOString(), reversalOf: e.reversal_of }));
+    "SELECT id, kind, amount_minor::text AS amount_minor, name, source, occurrence_id, occurred_at, occurred_on::text AS occurred_on, reversal_of FROM ledger_entries WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2", [userId, limit]);
+  return r.rows.map((e) => ({ id: e.id, kind: e.kind, amountMinor: e.amount_minor, name: e.name, source: e.source, occurrenceId: e.occurrence_id, occurredAt: new Date(e.occurred_at).toISOString(), occurredOn: e.occurred_on ?? null, reversalOf: e.reversal_of }));
 }
 
 export { forecastToSnapshot };

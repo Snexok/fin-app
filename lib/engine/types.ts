@@ -55,7 +55,8 @@ export type Limitation =
   | "GOAL_OVERDUE"
   | "PLAN_INFEASIBLE"
   | "ESSENTIAL_NOT_COVERED"
-  | "HORIZON_ASSUMED";
+  | "HORIZON_ASSUMED"
+  | "HORIZON_CAPPED";
 
 /** firstDate — первая точка нехватки; amountMinor — максимальная нехватка в горизонте, достигается в worstDate. */
 export interface Gap { firstDate: ISODate; amountMinor: Minor; worstDate: ISODate }

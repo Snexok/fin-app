@@ -22,6 +22,19 @@ export function assertDate(s: unknown, field = "date"): ISODate {
   return s;
 }
 
+/** Допустимое окно дат относительно "сегодня" (защита от гигантских горизонтов и опечаток в годе). */
+export const PAST_WINDOW_DAYS = 366;
+export const FUTURE_WINDOW_DAYS = 366;
+export const GOAL_FUTURE_DAYS = 3660;
+
+export function assertDateWithin(s: unknown, today: ISODate, field: string, opts: { pastDays?: number; futureDays?: number } = {}): ISODate {
+  const d = assertDate(s, field);
+  const past = opts.pastDays ?? PAST_WINDOW_DAYS, future = opts.futureDays ?? FUTURE_WINDOW_DAYS;
+  if (d < addDays(today, -past)) throw new DateError(`${field}: дата слишком далеко в прошлом`);
+  if (d > addDays(today, future)) throw new DateError(`${field}: дата слишком далеко в будущем (не позже ${addDays(today, future)})`);
+  return d;
+}
+
 export function makeDate(y: number, m: number, d: number): ISODate | null {
   const s = `${String(y).padStart(4, "0")}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
   return isValidDate(s) ? s : null;
@@ -44,6 +57,16 @@ export function localDate(now: Date, tz = DEFAULT_TZ): ISODate {
   const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
   const get = (t: string) => parts.find((p) => p.type === t)!.value;
   return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+/** Момент 12:00 локального дня d в зоне tz (а не 12:00 UTC, который в UTC+13/+14 — уже следующий день). */
+export function localNoon(d: ISODate, tz = DEFAULT_TZ): Date {
+  assertDate(d);
+  const guess = new Date(`${d}T12:00:00Z`);
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(guess);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)!.value);
+  const offset = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute")) - guess.getTime();
+  return new Date(guess.getTime() - offset);
 }
 
 /** Совместимость: раньше бралась дата UTC. Теперь — дата в зоне пользователя (по умолчанию Москва). */

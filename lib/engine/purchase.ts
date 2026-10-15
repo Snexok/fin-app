@@ -1,7 +1,7 @@
 // Сценарии покупки (§4.8–4.9). Все варианты используют одни и те же входы и допущения.
-import { addDays, assertDate, monthlyDates, weeklyDates, type ISODate } from "./dates";
+import { addDays, assertDate, diffDays, monthlyDates, weeklyDates, type ISODate } from "./dates";
 import { assertPositiveAmount, type Minor } from "./money";
-import { forecast, resolveHorizon, DEFAULT_PLANNING_DAYS } from "./forecast";
+import { forecast, resolveHorizon, DEFAULT_PLANNING_DAYS, MAX_HORIZON_DAYS } from "./forecast";
 import { ENGINE_VERSION, type Assessment, type ExtraCharge, type Forecast, type ForecastInput, type GoalImpact, type PurchaseRequest, type Scenario, type Simulation } from "./types";
 
 /** Продуктовое правило пилота (версионируется вместе с ENGINE_VERSION): "заметно" = запас на день падает больше чем вдвое. */
@@ -54,6 +54,7 @@ export function scenario(input: ForecastInput, key: string, priceMinor: Minor, d
   assertPositiveAmount(priceMinor, "price");
   assertDate(date, "purchase.date");
   if (date < input.today) throw new RangeError("Дата покупки в прошлом");
+  if (diffDays(input.today, date) >= MAX_HORIZON_DAYS) throw new RangeError("Дата покупки слишком далеко в будущем");
   const h = horizonCovering(input, date, !!opts.afterIncome);
   const scoped: ForecastInput = { ...input, horizonEnd: h.end };
   const baseline = forecast(scoped);

@@ -1,8 +1,8 @@
 // Предложения изменений и их подтверждение (§6.3, §9.1). Повтор подтверждения не создаёт второй операции.
 import { getDb, type Queryable } from "./db";
-import { assertDate, assertPositiveAmount, localDate, type ISODate, type Minor } from "./engine";
+import { addDays, assertDate, assertPositiveAmount, localDate, localNoon, PAST_WINDOW_DAYS, type ISODate, type Minor } from "./engine";
 import { bumpVersion, loadBook } from "./finance-service";
-import { ApiError, big, canonical, sha256hex, uuid } from "./util";
+import { ApiError, big, canonical, isUuid, sha256hex, uuid } from "./util";
 
 export const PROPOSAL_TTL_HOURS = 12;
 export type EntrySource = "chat" | "telegram" | "form";
@@ -48,11 +48,17 @@ async function validateEntry(q: Queryable, userId: string, e: EntryInput, today:
   if (e.direction !== "income" && e.direction !== "expense") throw new ApiError("INVALID_INPUT", 422, "direction: income или expense");
   assertPositiveAmount(e.amountMinor, "Сумма");
   const date = assertDate(e.date ?? today, "Дата");
-  if (date > today) throw new ApiError("INVALID_INPUT", 422, "Операция не может быть в будущем. Для будущих платежей используйте план.");
+  if (date > today) throw new ApiError("FUTURE_DATE", 422, "Операция не может быть в будущем. Для будущих платежей используйте план.");
+  if (date < addDays(today, -PAST_WINDOW_DAYS)) throw new ApiError("INVALID_DATE", 422, "Дата операции слишком далеко в прошлом");
   if (e.occurrenceId) {
-    const o = await q.query<{ direction: string }>("SELECT direction FROM occurrences WHERE id=$1 AND user_id=$2 AND cancelled_at IS NULL", [e.occurrenceId, userId]);
+    if (!isUuid(e.occurrenceId)) throw new ApiError("NOT_FOUND", 404, "Плановое событие не найдено");
+    const o = await q.query<{ direction: string; remaining: string }>(
+      `SELECT o.direction, (o.amount_minor - COALESCE((SELECT SUM(CASE WHEN o.direction='expense' THEN -l.amount_minor ELSE l.amount_minor END)
+          FROM ledger_entries l WHERE l.user_id=o.user_id AND l.occurrence_id=o.id), 0))::text AS remaining
+         FROM occurrences o WHERE o.id=$1 AND o.user_id=$2 AND o.cancelled_at IS NULL`, [e.occurrenceId, userId]);
     if (!o.rows[0]) throw new ApiError("NOT_FOUND", 404, "Плановое событие не найдено");
     if (o.rows[0].direction !== e.direction) throw new ApiError("INVALID_INPUT", 422, "Направление операции не совпадает с плановым событием");
+    if (big(o.rows[0].remaining) <= 0n) throw new ApiError("OCCURRENCE_SETTLED", 409, "Это плановое событие уже закрыто");
   }
   return {
     direction: e.direction, amountMinor: e.amountMinor, currency: "RUB", date,
@@ -90,7 +96,7 @@ export async function createEntryProposal(userId: string, entry: EntryInput, now
 }
 
 export async function getProposal(userId: string, id: string): Promise<ProposalView> {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
+  if (!isUuid(id)) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
   const db = await getDb();
   const r = await db.query("SELECT * FROM proposals WHERE id=$1 AND user_id=$2", [id, userId]);
   if (!r.rows[0]) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
@@ -98,6 +104,7 @@ export async function getProposal(userId: string, id: string): Promise<ProposalV
 }
 
 export async function rejectProposal(userId: string, id: string): Promise<ProposalView> {
+  if (!isUuid(id)) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
   const db = await getDb();
   return db.tx(async (q) => {
     const r = await q.query("SELECT * FROM proposals WHERE id=$1 AND user_id=$2 FOR UPDATE", [id, userId]);
@@ -117,19 +124,23 @@ export interface ConfirmOutcome { status: number; body: Record<string, unknown>;
  * ключ идемпотентности -> блокировка books -> блокировка proposal -> проверки -> запись -> версия -> событие -> результат.
  */
 export async function confirmProposal(userId: string, id: string, opts: { revision: number; idempotencyKey?: string | null }, now = new Date()): Promise<ConfirmOutcome> {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
+  if (!isUuid(id)) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
   if (!Number.isInteger(opts.revision) || opts.revision < 1) throw new ApiError("INVALID_INPUT", 400, "Нужна revision");
-  const key = (opts.idempotencyKey?.trim() || `proposal:${id}:${opts.revision}`).slice(0, 200);
+  const given = opts.idempotencyKey?.trim();
+  if (given != null && given !== "" && given.length > 200) throw new ApiError("INVALID_INPUT", 400, "Idempotency-Key длиннее 200 символов");
+  // HTTP требует ключ (route); внутренние вызовы без ключа получают детерминированный ключ на (id, revision).
+  const key = given || `proposal:${id}:${opts.revision}`;
   const requestHash = sha256hex(canonical({ id, revision: opts.revision }));
   const db = await getDb();
   return db.tx(async (q) => {
     const ins = await q.query("INSERT INTO idempotency_keys(user_id, scope, key, request_hash, status, expires_at) VALUES ($1,'proposal_confirm',$2,$3,'processing',$4) ON CONFLICT DO NOTHING RETURNING key",
       [userId, key, requestHash, new Date(now.getTime() + 86_400_000)]);
     if (!ins.rows.length) {
-      const ex = (await q.query<{ request_hash: string; status: string; response_status: number; response_body: unknown }>(
-        "SELECT request_hash, status, response_status, response_body FROM idempotency_keys WHERE user_id=$1 AND scope='proposal_confirm' AND key=$2", [userId, key])).rows[0];
+      const ex = (await q.query<{ request_hash: string; status: string; response_status: number; response_body: unknown; expires_at: Date }>(
+        "SELECT request_hash, status, response_status, response_body, expires_at FROM idempotency_keys WHERE user_id=$1 AND scope='proposal_confirm' AND key=$2", [userId, key])).rows[0];
       if (ex.request_hash !== requestHash) throw new ApiError("IDEMPOTENCY_KEY_REUSED", 409, "Этот ключ уже использован для другого запроса");
       if (ex.status !== "completed") throw new ApiError("IN_PROGRESS", 409, "Подтверждение уже обрабатывается. Повторите чуть позже.");
+      if (ex.expires_at && new Date(ex.expires_at) <= now) throw new ApiError("IDEMPOTENCY_KEY_EXPIRED", 409, "Срок ключа идемпотентности истёк. Создайте новый запрос.");
       const body = typeof ex.response_body === "string" ? JSON.parse(ex.response_body) : ex.response_body;
       return { status: ex.response_status, body: body as Record<string, unknown>, replayed: true };
     }
@@ -143,7 +154,7 @@ export async function confirmProposal(userId: string, id: string, opts: { revisi
     const pr = await q.query("SELECT * FROM proposals WHERE id=$1 AND user_id=$2 FOR UPDATE", [id, userId]);
     if (!pr.rows[0]) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
     let p = rowToView(pr.rows[0]);
-    const err = (code: string, message: string, status = 409) => ({ error: { code, message }, proposal: p });
+    const err = (code: string, message: string) => ({ error: { code, message }, proposal: p });
 
     if (p.status === "applied") return finish(200, { proposal: p, result: p.result, alreadyApplied: true });
     if (p.status === "rejected") return finish(409, err("PROPOSAL_REJECTED", "Это предложение отклонено"));
@@ -154,7 +165,15 @@ export async function confirmProposal(userId: string, id: string, opts: { revisi
     }
     if (p.revision !== opts.revision) return finish(409, err("PROPOSAL_REVISION_MISMATCH", "Предложение изменилось. Проверьте новые данные."));
     if (big(p.baseFinanceVersion) !== book.financeVersion) {
-      // Данные изменились: новая ревизия на текущей версии, старая кнопка её не подтвердит.
+      // Данные изменились: перепроверяем предложение на текущем состоянии (событие активно и не закрыто, дата допустима).
+      try { await validateEntry(q, userId, { ...p.payload }, localDate(now, book.timezone)); }
+      catch (e) {
+        if (!(e instanceof ApiError)) throw e;
+        await q.query("UPDATE proposals SET status='expired' WHERE id=$1", [id]);
+        p = { ...p, status: "expired" };
+        return finish(409, err("PROPOSAL_INVALIDATED", `Предложение больше не применимо: ${e.message}. Создайте новое.`));
+      }
+      // Новая ревизия на текущей версии, старая кнопка её не подтвердит.
       const u = await q.query("UPDATE proposals SET revision=revision+1, base_finance_version=$2 WHERE id=$1 RETURNING *", [id, book.financeVersion]);
       p = rowToView(u.rows[0]);
       return finish(409, err("STALE_PROPOSAL", "Данные изменились. Проверьте обновлённый расчёт."));
@@ -167,12 +186,13 @@ export async function confirmProposal(userId: string, id: string, opts: { revisi
     }
     const entryId = uuid();
     const signed = pl.direction === "expense" ? -pl.amountMinor : pl.amountMinor;
-    const occurredAt = pl.date === localDate(now, book.timezone) ? now : new Date(`${pl.date}T12:00:00Z`);
+    // Календарная дата хранится отдельно (occurred_on); момент — 12:00 этого дня в зоне пользователя.
+    const occurredAt = pl.date === localDate(now, book.timezone) ? now : localNoon(pl.date, book.timezone);
     const source: EntrySource = pl.source ?? "chat";
     await q.query(
-      `INSERT INTO ledger_entries(id, user_id, occurrence_id, kind, amount_minor, affects_balance, occurred_at, name, source, proposal_id, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, clock_timestamp())`,
-      [entryId, userId, pl.occurrenceId, pl.direction, signed, !pl.alreadyIncludedInBalance, occurredAt, pl.description, source, id]);
+      `INSERT INTO ledger_entries(id, user_id, occurrence_id, kind, amount_minor, affects_balance, occurred_at, occurred_on, name, source, proposal_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, clock_timestamp())`,
+      [entryId, userId, pl.occurrenceId, pl.direction, signed, !pl.alreadyIncludedInBalance, occurredAt, pl.date, pl.description, source, id]);
     const version = await bumpVersion(q, userId, "entry_created", entryId, { proposalId: id, revision: p.revision, amountMinor: signed, occurrenceId: pl.occurrenceId });
     const result = { entryId, financeVersion: version.toString() };
     const u = await q.query("UPDATE proposals SET status='applied', applied_at=$2, result=$3 WHERE id=$1 RETURNING *", [id, now, JSON.stringify(result)]);
