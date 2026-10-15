@@ -5,10 +5,15 @@ export const sha256hex = (s: string) => createHash("sha256").update(s).digest("h
 export const randomToken = (bytes = 32) => randomBytes(bytes).toString("base64url");
 export const big = (v: unknown): bigint => (v == null ? 0n : BigInt(String(v)));
 
-export function safeEqualHex(a: string, b: string): boolean {
-  const x = Buffer.from(a, "hex"), y = Buffer.from(b, "hex");
-  return x.length === y.length && timingSafeEqual(x, y);
+/** Сравнение секретов за постоянное время (по sha256, чтобы не раскрывать длину). */
+export function safeEqual(a: string, b: string): boolean {
+  const x = createHash("sha256").update(a).digest(), y = createHash("sha256").update(b).digest();
+  return timingSafeEqual(x, y) && a.length === b.length;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** Строгая проверка UUID на границе: в SQL не уходит произвольный ввод (и не попадает в логи ошибок PG). */
+export const isUuid = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(v);
 
 /** JSON с bigint -> десятичная строка (все суммы в API передаются строками копеек). */
 export function toJsonSafe<T>(v: T): unknown {
