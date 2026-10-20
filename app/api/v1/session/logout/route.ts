@@ -2,9 +2,10 @@ import { cookies } from "next/headers";
 import { assertSameOrigin, handleError, json } from "../../../../../lib/api";
 import { cookieBase, LINK_COOKIE, SESSION_COOKIE } from "../../../../../lib/session";
 import { revokeSession } from "../../../../../lib/auth";
+import { apiRoute } from "../../../../../lib/service-log";
 export const dynamic = "force-dynamic";
 // Выход: сессия отзывается в БД, cookie удаляются.
-export async function POST(req: Request) {
+async function postHandler(req: Request) {
   try {
     assertSameOrigin(req);
     const c = await cookies();
@@ -15,3 +16,4 @@ export async function POST(req: Request) {
     return json({ ok: true });
   } catch (e) { return handleError(e); }
 }
+export const POST = apiRoute("session.logout", postHandler);
