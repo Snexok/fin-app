@@ -2,6 +2,8 @@
 // Токены хранятся только как sha256-хеши. Знание чужого ID ничего не даёт.
 import { getDb, type Queryable } from "./db";
 import { ApiError, isUuid, randomToken, sha256hex, uuid } from "./util";
+import { mergeReferrals } from "./referrals";
+import { mergePlans } from "./plans/entitlements";
 
 /** Скользящая сессия: 30 дней с последней активности, но не дольше 180 дней от входа. */
 export const SESSION_TTL_DAYS = 30;
@@ -31,7 +33,9 @@ export async function createAnonymousSession(now = new Date()): Promise<{ userId
 }
 
 async function insertSession(q: Queryable, userId: string, identityId: string, token: string, expiresAt: Date) {
-  await q.query("INSERT INTO sessions(id, user_id, identity_id, token_hash, expires_at) VALUES ($1,$2,$3,decode($4,'hex'),$5)", [uuid(), userId, identityId, sha256hex(token), expiresAt]);
+  // created_at — от того же «сейчас», что и expires_at (а не от часов БД): лимит 180 дней детерминирован.
+  const createdAt = new Date(expiresAt.getTime() - SESSION_TTL_DAYS * 86_400_000);
+  await q.query("INSERT INTO sessions(id, user_id, identity_id, token_hash, expires_at, created_at) VALUES ($1,$2,$3,decode($4,'hex'),$5,$6)", [uuid(), userId, identityId, sha256hex(token), expiresAt, createdAt]);
 }
 
 export interface IssuedSession { userId: string; token: string; expiresAt: Date }
@@ -249,13 +253,19 @@ export async function confirmLink(userId: string, id: string, browserSecret: str
       if (webHas || !tgHas) {
         // Данные только в вебе (или нигде): переносим Telegram-identity сюда, пустой аккаунт удаляем.
         await q.query("UPDATE identities SET user_id=$1 WHERE id=$2", [userId, existing.id]);
+        await mergeOnboarding(q, existing.user_id, userId);
+        await mergeReferrals(q, existing.user_id, userId); // один человек: самоприглашение после /link снимается
+        await mergePlans(q, existing.user_id, userId); // Плюс, счётчики AI-ответов и заявка — одни на человека
         await q.query("DELETE FROM users u WHERE u.id=$1 AND NOT EXISTS (SELECT 1 FROM identities i WHERE i.user_id=u.id)", [existing.user_id]);
       } else {
         // Данные только в Telegram: веб-identity и сессии переходят к Telegram-аккаунту.
         await q.query("UPDATE identities SET user_id=$1 WHERE user_id=$2", [existing.user_id, userId]);
         await q.query("UPDATE auth_challenges SET target_user_id=$1 WHERE target_user_id=$2", [existing.user_id, userId]);
         await q.query("DELETE FROM conversation_state WHERE user_id=$1", [userId]);
+        await mergeOnboarding(q, userId, existing.user_id);
         await q.query("DELETE FROM idempotency_keys WHERE user_id=$1", [userId]);
+        await mergeReferrals(q, userId, existing.user_id);
+        await mergePlans(q, userId, existing.user_id);
         await q.query("DELETE FROM users WHERE id=$1", [userId]);
         result = { linked: true, userId: existing.user_id, mergedInto: "telegram" };
       }
@@ -263,4 +273,18 @@ export async function confirmLink(userId: string, id: string, browserSecret: str
     await q.query("UPDATE auth_challenges SET status='consumed', consumed_at=$2 WHERE id=$1", [id, now]);
     return result;
   });
+}
+
+/**
+ * Слияние сессий онбординга при привязке: остаётся более поздняя по updated_at (вместе с её лентой).
+ * Сессия донора переносится, только если она новее; иначе удаляется каскадом вместе с пользователем.
+ */
+async function mergeOnboarding(q: Queryable, from: string, to: string) {
+  const r = await q.query<{ user_id: string; updated_at: Date }>("SELECT user_id, updated_at FROM onboarding_session WHERE user_id = ANY($1::uuid[])", [[from, to]]);
+  const src = r.rows.find((x) => x.user_id === from), dst = r.rows.find((x) => x.user_id === to);
+  if (!src || (dst && new Date(dst.updated_at) >= new Date(src.updated_at))) return;
+  await q.query("DELETE FROM onboarding_session WHERE user_id=$1", [to]);
+  await q.query("DELETE FROM onboarding_message WHERE user_id=$1", [to]);
+  await q.query("UPDATE onboarding_session SET user_id=$2::uuid, state = jsonb_set(state, '{userId}', to_jsonb($3::text)) WHERE user_id=$1", [from, to, to]);
+  await q.query("UPDATE onboarding_message SET user_id=$2 WHERE user_id=$1", [from, to]);
 }

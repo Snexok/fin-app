@@ -133,6 +133,8 @@ export interface PlanInput {
   payments: { name: string; amountMinor: Minor; dueOn: ISODate }[];
   /** savedMinor не задан — накопления по существующей цели сохраняются как есть (форма их не редактирует). */
   goal: null | { name: string; targetMinor: Minor; targetDate: ISODate; savedMinor?: Minor; savedInBalance?: boolean };
+  /** Период планирования (дни), если доход нерегулярный или неизвестен. Не задан — не меняется (по умолчанию 30). */
+  planningDays?: number;
 }
 
 const MAX_NAME = 120;
@@ -147,6 +149,7 @@ export function validatePlan(p: PlanInput, today?: ISODate): PlanInput {
   const d = (v: unknown, field: string, goal = false) => (today ? assertDateWithin(v, today, field, goal ? { futureDays: GOAL_FUTURE_DAYS } : {}) : assertDate(v, field));
   for (const i of p.incomes) { assertPositiveAmount(i.amountMinor, "Доход"); d(i.dueOn, "Дата дохода"); }
   for (const x of p.payments) { assertPositiveAmount(x.amountMinor, `Платёж ${x.name}`); d(x.dueOn, `Дата платежа ${x.name}`); }
+  if (p.planningDays != null && !(Number.isInteger(p.planningDays) && p.planningDays >= 1 && p.planningDays <= 365)) throw new ApiError("INVALID_INPUT", 422, "Период планирования: от 1 до 365 дней");
   if (p.goal) { assertPositiveAmount(p.goal.targetMinor, "Цель"); d(p.goal.targetDate, "Дата цели", true); if (p.goal.savedMinor != null) assertNonNegativeAmount(p.goal.savedMinor, "Уже накоплено"); }
   return p;
 }
@@ -193,6 +196,7 @@ export async function savePlan(userId: string, plan: PlanInput, source: "form" |
     for (const x of plan.payments)
       await q.query("INSERT INTO occurrences(id, user_id, direction, name, amount_minor, due_on, certainty) VALUES ($1,$2,'expense',$3,$4,$5,'committed')",
         [uuid(), userId, cleanName(x.name, "Платёж"), x.amountMinor, x.dueOn]);
+    if (plan.planningDays != null) await q.query("UPDATE books SET planning_days=$2 WHERE user_id=$1", [userId, plan.planningDays]);
     await saveGoal(q, userId, plan.goal);
     return bumpVersion(q, userId, "plan_saved", null, { source, incomes: plan.incomes.length, payments: plan.payments.length, goal: !!plan.goal });
   });
@@ -224,6 +228,102 @@ async function saveGoal(q: Queryable, userId: string, goal: PlanInput["goal"]) {
   await q.query("UPDATE goals SET saved_outside_minor=$3 WHERE id=$1 AND user_id=$2", [gid, userId, inBalance ? 0n : saved]);
   const delta = (inBalance ? saved : 0n) - (existing ? big(existing.allocated) : 0n);
   if (delta !== 0n) await q.query("INSERT INTO goal_allocations(id, user_id, goal_id, delta_minor, reason) VALUES ($1,$2,$3,$4,'plan')", [uuid(), userId, gid, delta]);
+}
+
+// ---------- Точечные правки (онбординг-чат, режим «Изменить») ----------
+// Каждая операция: блокировка books, проверка версии, узкое изменение, ровно один bumpVersion. План целиком не перезаписывается.
+
+export interface PatchOptions {
+  now?: Date;
+  /** finance_version, на которой задан вопрос. Не совпала под блокировкой — 409 FINANCE_VERSION_CONFLICT, ничего не пишется. */
+  baseFinanceVersion?: bigint | null;
+}
+
+async function patchTx<T>(userId: string, eventType: string, payload: unknown, opts: PatchOptions, fn: (q: Queryable, today: ISODate, now: Date) => Promise<T>): Promise<{ result: T; financeVersion: bigint }> {
+  const now = opts.now ?? new Date();
+  const db = await getDb();
+  return db.tx(async (q) => {
+    const b = await q.query<{ timezone: string; v: string }>("SELECT u.timezone, b.finance_version::text AS v FROM books b JOIN users u ON u.id=b.user_id WHERE b.user_id=$1 FOR UPDATE OF b", [userId]);
+    if (!b.rows.length) throw new ApiError("NO_PLAN", 409, "Сначала нужен план: остаток и доход");
+    const current = big(b.rows[0].v);
+    if (opts.baseFinanceVersion != null && opts.baseFinanceVersion !== current) {
+      const book = await loadBook(q, userId);
+      throw new ApiError("FINANCE_VERSION_CONFLICT", 409, "Пока мы говорили, данные изменились (например, записалась трата).",
+        { financeVersion: current.toString(), balanceMinor: book?.balanceMinor.toString() ?? null });
+    }
+    const result = await fn(q, localDate(now, b.rows[0].timezone ?? DEFAULT_TZ), now);
+    const financeVersion = await bumpVersion(q, userId, eventType, null, payload);
+    return { result, financeVersion };
+  });
+}
+
+/** Новый остаток «сейчас»: становится точкой отсчёта, прошлые операции сохраняются в истории. */
+export async function setBalance(userId: string, balanceMinor: Minor, opts: PatchOptions = {}) {
+  if (balanceMinor < 0n || balanceMinor > MAX_MINOR) throw new ApiError("INVALID_AMOUNT", 422, "Текущий остаток: некорректная сумма");
+  return patchTx(userId, "balance_set", { source: "chat" }, opts, async (q, _today, now) => {
+    await q.query("UPDATE books SET opening_balance_minor=$2, opening_as_of=clock_timestamp(), last_reconciled_at=$3 WHERE user_id=$1", [userId, balanceMinor, now]);
+  });
+}
+
+/**
+ * Ближайший доход: заменяет только указанные плановые доходы (replaceIds, без проводок), остальные не трогает.
+ * income=null + planningDays — доход нерегулярный: считаем на период. Возвращает id нового дохода.
+ */
+export async function setNextIncome(userId: string, income: { amountMinor: Minor; dueOn: ISODate; name?: string } | null, planningDays: number | undefined, replaceIds: string[], opts: PatchOptions = {}) {
+  if (planningDays != null && !(Number.isInteger(planningDays) && planningDays >= 1 && planningDays <= 365)) throw new ApiError("INVALID_INPUT", 422, "Период планирования: от 1 до 365 дней");
+  return patchTx(userId, "income_set", { source: "chat", income: !!income, replaced: replaceIds.length }, opts, async (q, today, now) => {
+    if (income) { assertPositiveAmount(income.amountMinor, "Доход"); assertDateWithin(income.dueOn, today, "Дата дохода"); }
+    if (replaceIds.length) await q.query(`UPDATE occurrences o SET cancelled_at=$3 WHERE o.user_id=$1 AND o.id = ANY($2::uuid[]) AND o.direction='income' AND o.cancelled_at IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM ledger_entries e WHERE e.user_id=o.user_id AND e.occurrence_id=o.id)`, [userId, replaceIds, now]);
+    let id: string | null = null;
+    if (income) {
+      id = uuid();
+      await q.query("INSERT INTO occurrences(id, user_id, direction, name, amount_minor, due_on, certainty) VALUES ($1,$2,'income',$3,$4,$5,'committed')",
+        [id, userId, cleanName(income.name, "Доход"), income.amountMinor, income.dueOn]);
+    }
+    if (planningDays != null) await q.query("UPDATE books SET planning_days=$2 WHERE user_id=$1", [userId, planningDays]);
+    return id;
+  });
+}
+
+/**
+ * Обязательные платежи этого диалога: replaceIds (ранее добавленные им же) заменяются новым списком. Возвращает id новых.
+ * Если заменяемый платёж уже частично оплачен — 409: не дублируем остаток оплаченного платежа.
+ */
+export async function setPayments(userId: string, payments: { name: string; amountMinor: Minor; dueOn: ISODate }[], replaceIds: string[] = [], opts: PatchOptions = {}) {
+  if (payments.length > 50) throw new ApiError("INVALID_INPUT", 422, "Слишком много платежей");
+  return patchTx(userId, "payments_set", { source: "chat", count: payments.length, replaced: replaceIds.length }, opts, async (q, today, now) => {
+    for (const p of payments) { assertPositiveAmount(p.amountMinor, `Платёж ${p.name}`); assertDateWithin(p.dueOn, today, `Дата платежа ${p.name}`); }
+    if (replaceIds.length) {
+      const settled = await q.query("SELECT 1 FROM ledger_entries e WHERE e.user_id=$1 AND e.occurrence_id = ANY($2::uuid[]) LIMIT 1", [userId, replaceIds]);
+      if (settled.rows.length) throw new ApiError("FINANCE_VERSION_CONFLICT", 409, "Один из платежей уже оплачен — поправьте его на вкладке «Платежи».");
+      await q.query("UPDATE occurrences SET cancelled_at=$3 WHERE user_id=$1 AND id = ANY($2::uuid[]) AND direction='expense' AND cancelled_at IS NULL", [userId, replaceIds, now]);
+    }
+    const ids: string[] = [];
+    for (const p of payments) {
+      const id = uuid(); ids.push(id);
+      await q.query("INSERT INTO occurrences(id, user_id, direction, name, amount_minor, due_on, certainty) VALUES ($1,$2,'expense',$3,$4,$5,'committed')", [id, userId, cleanName(p.name, "Платёж"), p.amountMinor, p.dueOn]);
+    }
+    return ids;
+  });
+}
+
+export async function setReserve(userId: string, reserveMinor: Minor, opts: PatchOptions = {}) {
+  assertNonNegativeAmount(reserveMinor, "Резерв");
+  return patchTx(userId, "reserve_set", { source: "chat" }, opts, async (q) => { await q.query("UPDATE books SET reserve_minor=$2 WHERE user_id=$1", [userId, reserveMinor]); });
+}
+
+/** null = «не знаю»: движок покажет ESSENTIAL_SPENDING_UNKNOWN, а не посчитает 0. */
+export async function setEssentialDaily(userId: string, essentialDailyMinor: Minor | null, opts: PatchOptions = {}) {
+  if (essentialDailyMinor != null) assertNonNegativeAmount(essentialDailyMinor, "Траты в день");
+  return patchTx(userId, "essential_set", { source: "chat", known: essentialDailyMinor != null }, opts, async (q) => { await q.query("UPDATE books SET essential_daily_minor=$2 WHERE user_id=$1", [userId, essentialDailyMinor]); });
+}
+
+export async function setGoal(userId: string, goal: PlanInput["goal"], opts: PatchOptions = {}) {
+  return patchTx(userId, "goal_set", { source: "chat", goal: !!goal }, opts, async (q, today) => {
+    if (goal) { assertPositiveAmount(goal.targetMinor, "Цель"); assertDateWithin(goal.targetDate, today, "Дата цели", { futureDays: GOAL_FUTURE_DAYS }); }
+    await saveGoal(q, userId, goal);
+  });
 }
 
 // ---------- Совместимость с /api/profile (рубли) ----------
