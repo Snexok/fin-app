@@ -29,9 +29,13 @@ export default {
   // NEXT_DIST_DIR позволяет собрать проект, не мешая запущенному `next dev` (по умолчанию .next).
   distDir: process.env.NEXT_DIST_DIR || ".next",
   serverExternalPackages: ["pg", "@electric-sql/pglite"],
-  outputFileTracingIncludes: { "/api/**": ["./db/migrations/**"] },
+  outputFileTracingIncludes: { "/api/**": ["./db/migrations/**"], "/internal/**": ["./db/migrations/**"] },
   poweredByHeader: false,
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      // Внутренний дашборд: не индексировать и не кешировать.
+      { source: "/internal/:path*", headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }, { key: "Cache-Control", value: "no-store" }] },
+    ];
   },
 };

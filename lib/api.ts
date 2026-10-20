@@ -4,6 +4,7 @@ import { ApiError, toJsonSafe, uuid } from "./util";
 import { MoneyError } from "./engine/money";
 import { DateError } from "./engine/dates";
 import { DbUnavailableError } from "./db";
+import { safeMessage, tagResponse } from "./service-log";
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
@@ -13,7 +14,8 @@ export function json(data: unknown, status = 200, headers: Record<string, string
 
 /** Единый формат ошибки: { error: { code, message, requestId, ...extra } }. */
 export function errorJson(code: string, message: string, status: number, extra: Record<string, unknown> = {}) {
-  return json({ error: { code, message, requestId: uuid(), ...extra } }, status);
+  // Код и шаблонный текст — для журнала ошибок (lib/service-log.ts apiRoute), без разбора тела ответа.
+  return tagResponse(json({ error: { code, message, requestId: uuid(), ...extra } }, status), { code, message });
 }
 
 export function handleError(e: unknown) {
@@ -24,7 +26,9 @@ export function handleError(e: unknown) {
   const requestId = uuid();
   // В лог — только тип, код и requestId: сообщения ошибок (например, PG) могут содержать ввод пользователя.
   console.error("api error", { requestId, name: (e as Error)?.name, code: (e as { code?: string })?.code });
-  return json({ error: { code: "INTERNAL", message: "Что-то пошло не так. Попробуйте ещё раз.", requestId } }, 500);
+  // В журнал service_errors — код INTERNAL и только имя/код исключения (safeMessage), без текста.
+  return tagResponse(json({ error: { code: "INTERNAL", message: "Что-то пошло не так. Попробуйте ещё раз.", requestId } }, 500),
+    { code: "INTERNAL", message: safeMessage(e), error: e });
 }
 
 /** Разрешённые Origin: APP_ORIGIN (через запятую) или схема+Host самого запроса. X-Forwarded-Host не используется. */

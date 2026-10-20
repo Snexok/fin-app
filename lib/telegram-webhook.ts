@@ -7,6 +7,7 @@ import { telegramBotToken } from "./telegram-token";
 import { ApiError, safeEqual } from "./util";
 import { MoneyError } from "./engine/money";
 import { DateError } from "./engine/dates";
+import { logServiceError } from "./service-log";
 
 export const MAX_UPDATE_BYTES = 256 * 1024;
 
@@ -35,10 +36,12 @@ export async function processInboxUpdate(source: string, eventId: string, getBot
     if (e instanceof ApiError || e instanceof MoneyError || e instanceof DateError) {
       // Детерминированная ошибка предметной области: повтор даст тот же результат (и дубли сообщений). Закрываем событие.
       console.error("telegram update rejected", { source, eventId, code });
+      await logServiceError({ channel: "telegram", route: "bot.update", error: e, code });
       await markInboxProcessed(source, eventId, code).catch(() => {});
       return "failed";
     }
     console.error("telegram update failed", { source, eventId, name: (e as Error)?.name, code: (e as { code?: string })?.code });
+    await logServiceError({ channel: "telegram", route: "bot.update", error: e }); // пропускается, если уже записано обработчиком бота
     await releaseInboxEvent(source, eventId, code).catch(() => {});
     return "failed";
   }

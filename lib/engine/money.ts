@@ -63,12 +63,12 @@ export function floorDiv(a: Minor, b: Minor): Minor {
   return (a % b !== 0n && (a < 0n) !== (b < 0n)) ? q - 1n : q;
 }
 
-/** "15 000 ₽" или "15 000,50 ₽". Рубли округляются вниз только при отображении. */
+/** "15 000 ₽" или "15 000,50 ₽" — с неразрывными пробелами (разряды и перед ₽). Рубли округляются вниз только при отображении. */
 export function formatRub(v: Minor, opts: { kopecks?: boolean } = {}): string {
   const neg = v < 0n;
   const a = neg ? -v : v;
-  const rub = (a / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  const rub = (a / 100n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0");
   const kop = a % 100n;
   const tail = opts.kopecks && kop !== 0n ? "," + kop.toString().padStart(2, "0") : "";
-  return `${neg ? "−" : ""}${rub}${tail} ₽`;
+  return `${neg ? "−" : ""}${rub}${tail}\u00a0₽`;
 }

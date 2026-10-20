@@ -3,6 +3,7 @@
 import { cookies } from "next/headers";
 import { SESSION_TTL_DAYS, touchSession, userIdForSessionToken, type IssuedSession } from "./auth";
 import { ApiError } from "./util";
+import { setCallUser } from "./service-log";
 
 export const SESSION_COOKIE = "mozhno_sid";
 export const LINK_COOKIE = "mozhno_link";
@@ -25,6 +26,7 @@ export async function currentUserId(): Promise<string | null> {
   const c = await cookies();
   const token = c.get(SESSION_COOKIE)?.value;
   const id = await userIdForSessionToken(token);
+  setCallUser(id); // журнал обращений: псевдоним пользователя текущего запроса
   if (id && token && (await touchSession(token))) await setSessionCookie({ token });
   return id;
 }

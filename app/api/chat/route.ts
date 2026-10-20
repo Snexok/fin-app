@@ -2,9 +2,10 @@ import { assertSameOrigin, errorJson, handleError, json, readJson } from "../../
 import { requireUserId } from "../../../lib/session";
 import { answer } from "../../../lib/coach";
 import { enforce, LIMITS } from "../../../lib/rate-limit";
+import { apiRoute } from "../../../lib/service-log";
 export const dynamic = "force-dynamic";
 // Дата "сегодня" определяется сервером в зоне пользователя; поле today от клиента игнорируется.
-export async function POST(req: Request) {
+async function postHandler(req: Request) {
   try {
     assertSameOrigin(req);
     const id = await requireUserId();
@@ -14,3 +15,4 @@ export async function POST(req: Request) {
     return json(await answer(id, message, { channel: "web" }));
   } catch (e) { return handleError(e); }
 }
+export const POST = apiRoute("chat.message", postHandler);

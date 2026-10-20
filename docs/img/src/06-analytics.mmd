@@ -1,0 +1,16 @@
+flowchart LR
+  subgraph src["Источники событий"]
+    SRV["Сервер: coach, orchestrator,<br/>proposals, reminders, бот"]
+    CLI["Клиент: analytics-client.ts<br/>session_started, screen_viewed,<br/>onboarding_preview_shown"]
+  end
+  CLI -->|"POST /api/v1/analytics<br/>≤20 событий, 8 КБ, 60/мин"| V
+  SRV --> V["track(): allowlist EVENTS<br/>значения только из enum"]
+  V --> C{"ANALYTICS_SECRET задан?<br/>users.analytics_enabled?"}
+  C -- нет --> X["событие не пишется"]
+  C -- да --> PS["subject = HMAC-SHA256(secret, user_id:epoch)<br/>время → до минуты<br/>dedup_key = HMAC(...)"]
+  PS --> T[("analytics_events<br/>миграция 006")]
+  T --> M["lib/analytics-metrics.ts<br/>DAU/WAU, активация, воронка,<br/>когорты D1/D7/D30, CTR напоминаний"]
+  M --> D["/internal/analytics<br/>SVG + ECharts, admin cookie"]
+  T --> E["scripts/export-metrics.ts → CSV<br/>или SQL из docs/METRICS-AND-LOGS.md"]
+  T --> RT["retention: 180 дней<br/>/api/cron/cleanup"]
+  OPT["opt-out: /privacy, тумблер, PUT consent"] -->|DELETE по subject, epoch+1| T

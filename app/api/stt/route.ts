@@ -1,10 +1,12 @@
 import { assertSameOrigin, errorJson, handleError, json, readBody } from "../../../lib/api";
 import { requireUserId } from "../../../lib/session";
-import { transcribe } from "../../../lib/ai/llm";
+import { transcribeAudio } from "../../../lib/llm";
 import { clientIp, enforce, LIMITS } from "../../../lib/rate-limit";
 import { MAX_AUDIO_BYTES, sniffAudio } from "../../../lib/audio";
+import { apiRoute } from "../../../lib/service-log";
+import { recordVoice, voiceLeft } from "../../../lib/plans";
 export const dynamic = "force-dynamic";
-export async function POST(req: Request) {
+async function postHandler(req: Request) {
   try {
     assertSameOrigin(req);
     const uid = await requireUserId();
@@ -20,7 +22,13 @@ export async function POST(req: Request) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     const kind = sniffAudio(bytes);
     if (!kind) return errorJson("UNSUPPORTED_MEDIA", "Нужен аудиофайл", 415);
-    try { return json({ text: await transcribe(new Blob([bytes], { type: kind.mime }), `voice.${kind.ext}`) }); }
-    catch { return errorJson("STT_UNAVAILABLE", "Распознавание речи сейчас недоступно. Напишите текстом, пожалуйста.", 503); }
+    // Минуты голоса по тарифу (lib/plans): AI-ответы не тратятся; закончились — «напишите текстом», расчёты работают как обычно.
+    if ((await voiceLeft(uid)) === 0) return errorJson("VOICE_QUOTA", "Голосовые минуты пока закончились. Напишите текстом — посчитаю так же.", 429);
+    // Учёт и бюджет — в lib/llm/stt.ts (ai_usage, purpose=voice_transcribe). Отказ бюджета — тоже «напишите текстом».
+    const r = await transcribeAudio(new Blob([bytes], { type: kind.mime }), { filename: `voice.${kind.ext}`, userId: uid });
+    if (r.ok) { await recordVoice(uid, r.seconds); return json({ text: r.text }); }
+    if (r.reason === "budget") return errorJson("STT_BUDGET", "Голосовой ввод на сегодня исчерпан. Напишите текстом, пожалуйста.", 503);
+    return errorJson("STT_UNAVAILABLE", "Распознавание речи сейчас недоступно. Напишите текстом, пожалуйста.", 503);
   } catch (e) { return handleError(e); }
 }
+export const POST = apiRoute("stt", postHandler);

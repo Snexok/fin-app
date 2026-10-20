@@ -142,6 +142,27 @@ describe("error format, health, idempotency (Medium #30, #27, #29)", () => {
   });
 });
 
+describe("«Купил — записать» под ответом «Можно?» (from_decision)", () => {
+  it("creates a proposal for the decision's item and price; other users' decisions are 404", async () => {
+    await newSession();
+    await call(profilePOST, req("/api/profile", { method: "POST", body: profileBody() }));
+    const ask = await call(chatPOST, req("/api/chat", { method: "POST", body: { message: "Можно купить кофе за 300?" } }));
+    expect(ask.body.impact.price).toBe(300);
+    const decisionId = ask.body.decisionId as string;
+    const p = await call(proposalsPOST, req("/api/v1/proposals", { method: "POST", body: { type: "from_decision", decisionId } }));
+    expect(p.status).toBe(201);
+    expect(p.body.proposal).toMatchObject({ status: "pending", payload: { direction: "expense", amountMinor: "30000", description: "Кофе", source: "chat" } });
+    expect(p.body.reply).toContain("Записать расход «Кофе»");
+    const bad = await call(proposalsPOST, req("/api/v1/proposals", { method: "POST", body: { type: "from_decision", decisionId: "not-a-uuid" } }));
+    expect(bad.status).toBe(404);
+    jar.clear();
+    await newSession();
+    await call(profilePOST, req("/api/profile", { method: "POST", body: profileBody() }));
+    const foreign = await call(proposalsPOST, req("/api/v1/proposals", { method: "POST", body: { type: "from_decision", decisionId } }));
+    expect(foreign.status).toBe(404);
+  });
+});
+
 describe("stale plan form (High #3) over HTTP", () => {
   it("409 when baseFinanceVersion is missing or stale; spend recorded meanwhile survives", async () => {
     await newSession();

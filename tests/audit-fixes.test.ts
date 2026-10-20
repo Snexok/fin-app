@@ -124,7 +124,7 @@ describe("Medium fixes", () => {
     const { userId } = await webUser();
     const r = await answer(userId, "Потратил 15.50 на кофе", { now: NOW });
     expect(r.proposal!.payload.amountMinor).toBe(1550n);
-    expect(r.reply).toContain("15,50 ₽");
+    expect(r.reply).toContain("15,50\u00a0₽");
     const t = await answer(userId, "Потратил 1.234 ₽ на такси", { now: NOW });
     expect(t.proposal!.payload.amountMinor).toBe(123400n);
     const amb = await answer(userId, "Потратил 100 и 500", { now: NOW });
@@ -196,7 +196,7 @@ describe("Codex review follow-ups", () => {
     expect((await getState<{ onboarding: { step: number } }>(userId, "telegram"))!.onboarding.step).toBe(2);
   });
   it("money token is not parsed as a date; ambiguous payment lines are refused", () => {
-    expect(parseDate("Потратил 10.12 ₽ на кофе", "2026-10-16", { prefer: "past" })).toBeNull();
+    expect(parseDate("Потратил 10.12\u00a0₽ на кофе", "2026-10-16", { prefer: "past" })).toBeNull();
     expect(parsePaymentLines("Аренда 100 или 500 20.10", "2026-10-16").errors).toHaveLength(1);
   });
   it("absolute session lifetime is 180 days even with renewals", async () => {

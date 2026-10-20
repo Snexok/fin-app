@@ -16,6 +16,7 @@
     "@ai-sdk/openai": "^4.0.95",
     "@electric-sql/pglite": "^0.5.10",
     "ai": "^7.0.142",
+    "echarts": "^6.1.0",
     "grammy": "^1.46.0",
     "next": "^15.5.28",
     "pg": "^8.23.1",

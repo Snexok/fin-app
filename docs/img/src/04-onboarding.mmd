@@ -1,0 +1,30 @@
+sequenceDiagram
+  autonumber
+  actor U as Пользователь
+  participant UI as onboarding-chat.tsx / бот
+  participant API as /api/v1/onboarding[/turn]
+  participant O as orchestrator
+  participant SL as slots.ts (разбор ответа)
+  participant PO as RulePolicy (rules-v1)
+  participant FS as finance-service + engine
+  participant DB as Postgres
+  U->>UI: открыть знакомство
+  UI->>API: POST /api/v1/onboarding {mode}
+  API->>O: openOnboarding
+  O->>DB: onboarding_session (CAS по revision)
+  O-->>UI: приветствие + кнопка «Начнём»
+  loop каждый ход
+    U->>UI: текст или выбор варианта
+    UI->>API: POST /turn {clientMessageId, text | selection}
+    API->>O: handleTurn (идемпотентно по client_key)
+    O->>SL: извлечь факт слота (остаток, доход, платежи…)
+    O->>PO: nextQuestion(session)
+    PO-->>O: ask / clarify / preview / summary / done
+    opt минимум собран (остаток + доход или период)
+      O->>FS: предварительный прогноз
+    end
+    O->>DB: onboarding_message, onboarding_session, analytics_events
+    O-->>UI: lead + карточки + варианты
+  end
+  O->>FS: savePlan (books, occurrences, goals)
+  Note over PO: LlmPolicy реализует тот же интерфейс,<br/>но не подключена. При сбое → RulePolicy

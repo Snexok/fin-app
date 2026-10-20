@@ -5,9 +5,10 @@ import { getForecast } from "../../../../../../lib/finance-service";
 import { forecastToSnapshot } from "../../../../../../lib/engine";
 import { enforce, LIMITS } from "../../../../../../lib/rate-limit";
 import { ApiError } from "../../../../../../lib/util";
+import { apiRoute } from "../../../../../../lib/service-log";
 export const dynamic = "force-dynamic";
 // Тело: { revision }. Заголовок Idempotency-Key обязателен: один на намерение, повторяется при retry (8-200 символов [A-Za-z0-9_:.-]).
-export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+async function postHandler(req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     assertSameOrigin(req);
     const userId = await requireUserId();
@@ -24,3 +25,4 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     return json({ ...bodyOut, replayed: out.replayed, current, ...current }, out.status);
   } catch (e) { return handleError(e); }
 }
+export const POST = apiRoute("proposal.confirm", postHandler);

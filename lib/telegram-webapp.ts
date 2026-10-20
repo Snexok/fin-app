@@ -3,7 +3,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 
 export const INIT_DATA_MAX_AGE_SEC = 24 * 3600;
 
-export interface VerifiedInitData { userId: number; authDate: number }
+export interface VerifiedInitData { userId: number; authDate: number; /** startapp-параметр ссылки (источник трафика), если был. */ startParam: string | null }
 
 export function verifyInitData(initData: string, botToken: string, now = new Date(), maxAgeSec = INIT_DATA_MAX_AGE_SEC): VerifiedInitData | null {
   if (typeof initData !== "string" || !initData || initData.length > 8192) return null;
@@ -22,7 +22,8 @@ export function verifyInitData(initData: string, botToken: string, now = new Dat
   let user: { id?: unknown };
   try { user = JSON.parse(params.get("user") ?? "null") ?? {}; } catch { return null; }
   if (typeof user.id !== "number" || !Number.isSafeInteger(user.id) || user.id <= 0) return null;
-  return { userId: user.id, authDate };
+  const sp = params.get("start_param");
+  return { userId: user.id, authDate, startParam: sp && /^[A-Za-z0-9_-]{1,64}$/.test(sp) ? sp : null };
 }
 
 /** Для тестов: подписать initData тем же алгоритмом. */

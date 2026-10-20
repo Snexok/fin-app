@@ -2,9 +2,10 @@ import { cookies } from "next/headers";
 import { assertSameOrigin, handleError, json } from "../../../../../../lib/api";
 import { cookieBase, LINK_COOKIE, requireUserId, SESSION_COOKIE, setSessionCookie } from "../../../../../../lib/session";
 import { confirmLink, rotateSession } from "../../../../../../lib/auth";
+import { apiRoute } from "../../../../../../lib/service-log";
 export const dynamic = "force-dynamic";
 // Шаг 3: подтверждение в исходном браузере (нужен cookie с секретом). После привязки сессия ротируется.
-export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+async function postHandler(req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     assertSameOrigin(req);
     const id = (await ctx.params).id;
@@ -17,3 +18,4 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     return json(r);
   } catch (e) { return handleError(e); }
 }
+export const POST = apiRoute("account.link", postHandler);

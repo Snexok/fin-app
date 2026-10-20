@@ -1,0 +1,19 @@
+flowchart TB
+  IN["Сообщение пользователя<br/>(текст или STT)"] --> G["Guard: лимиты, длина ≤1000,<br/>текст = данные, не инструкции"]
+  G --> LI["LLM: намерение + извлечение<br/>(structured output, JSON-схема)"]
+  LI --> VAL["Проверка: сумма и дата<br/>должны быть в исходном тексте"]
+  VAL --> ENG["Детерминированный движок<br/>считает все числа (копейки)"]
+  ENG --> EV["Evidence: вердикт, суммы, даты,<br/>ограничения расчёта"]
+  EV --> LE["LLM: объяснение простым языком<br/>только из Evidence"]
+  LE --> CHK["Проверка ответа: все числа<br/>совпадают с Evidence, иначе шаблон"]
+  CHK --> OUT["Ответ пользователю"]
+  subgraph proxy["LLM-прокси (план)"]
+    direction TB
+    URL["OpenAI-совместимый API<br/>shared1.multitool.works:4000/v1<br/>LLM_BASE_URL + LLM_API_KEY"]
+    URL --> M1
+    M1["1. gigachat3.5-432b-a28b"] -->|ошибка / таймаут| M2["2. qwen3.5-397b-a17b"] -->|ошибка / таймаут| M3["3. deepseek-v4-pro"]
+  end
+  LI -.-> proxy
+  LE -.-> proxy
+  M3 -->|все недоступны| FB["Fallback без LLM:<br/>regex-парсер + шаблоны (работает сейчас)"]
+  FB --> ENG

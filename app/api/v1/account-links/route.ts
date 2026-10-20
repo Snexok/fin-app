@@ -3,9 +3,10 @@ import { assertSameOrigin, handleError, json } from "../../../../lib/api";
 import { cookieBase, LINK_COOKIE, requireUserId } from "../../../../lib/session";
 import { deviceSummary, LINK_TTL_MINUTES, startLink } from "../../../../lib/auth";
 import { enforce, LIMITS } from "../../../../lib/rate-limit";
+import { apiRoute } from "../../../../lib/service-log";
 export const dynamic = "force-dynamic";
 // Шаг 1 привязки: одноразовый код (10 минут). Секрет браузера — только в HttpOnly-cookie.
-export async function POST(req: Request) {
+async function postHandler(req: Request) {
   try {
     assertSameOrigin(req);
     const userId = await requireUserId();
@@ -15,3 +16,4 @@ export async function POST(req: Request) {
     return json({ id: s.id, code: s.code, command: `/link ${s.code}`, deepLink: s.deepLink, expiresAt: s.expiresAt.toISOString() }, 201);
   } catch (e) { return handleError(e); }
 }
+export const POST = apiRoute("account.link", postHandler);
