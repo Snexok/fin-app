@@ -1,4 +1,5 @@
 // Предложения изменений и их подтверждение (§6.3, §9.1). Повтор подтверждения не создаёт второй операции.
+import { track } from "./analytics";
 import { getDb, type Queryable } from "./db";
 import { addDays, assertDate, assertPositiveAmount, localDate, localNoon, PAST_WINDOW_DAYS, type ISODate, type Minor } from "./engine";
 import { bumpVersion, loadBook } from "./finance-service";
@@ -81,9 +82,9 @@ export async function matchOccurrence(userId: string, description: string, direc
   return cands.length === 1 ? { id: cands[0].id, name: cands[0].name } : null;
 }
 
-export async function createEntryProposal(userId: string, entry: EntryInput, now = new Date()): Promise<ProposalView> {
+export async function createEntryProposal(userId: string, entry: EntryInput, now = new Date(), meta: { origin?: "chat" | "reminder" } = {}): Promise<ProposalView> {
   const db = await getDb();
-  return db.tx(async (q) => {
+  const view = await db.tx(async (q) => {
     const book = await loadBook(q, userId, true);
     if (!book) throw new ApiError("NO_PLAN", 409, "Сначала нужен план: остаток, доход и платежи");
     const payload = await validateEntry(q, userId, entry, localDate(now, book.timezone));
@@ -93,7 +94,12 @@ export async function createEntryProposal(userId: string, entry: EntryInput, now
       [id, userId, canonical(payload), sha256hex(canonical(payload)), book.financeVersion, expires]);
     return rowToView(r.rows[0]);
   });
+  await track(userId, "proposal_created", { kind: view.payload.direction, origin: meta.origin ?? "chat" }, { channel: channelOf(view), key: view.id, now });
+  return view;
 }
+
+/** Канал аналитики по источнику предложения. */
+const channelOf = (p: ProposalView) => (p.payload.source === "telegram" ? "telegram" : "web") as "telegram" | "web";
 
 export async function getProposal(userId: string, id: string): Promise<ProposalView> {
   if (!isUuid(id)) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
@@ -106,15 +112,20 @@ export async function getProposal(userId: string, id: string): Promise<ProposalV
 export async function rejectProposal(userId: string, id: string): Promise<ProposalView> {
   if (!isUuid(id)) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
   const db = await getDb();
-  return db.tx(async (q) => {
+  let changed = false;
+  const view = await db.tx(async (q) => {
     const r = await q.query("SELECT * FROM proposals WHERE id=$1 AND user_id=$2 FOR UPDATE", [id, userId]);
     if (!r.rows[0]) throw new ApiError("NOT_FOUND", 404, "Предложение не найдено");
     if (r.rows[0].status === "pending") {
       const u = await q.query("UPDATE proposals SET status='rejected' WHERE id=$1 RETURNING *", [id]);
+      changed = true;
       return rowToView(u.rows[0]);
     }
     return rowToView(r.rows[0]);
   });
+  // Только реальный переход pending → rejected; повтор кнопки событие не дублирует (плюс dedup по id).
+  if (changed) await track(userId, "proposal_rejected", { kind: view.payload.direction }, { channel: channelOf(view), key: view.id });
+  return view;
 }
 
 export interface ConfirmOutcome { status: number; body: Record<string, unknown>; replayed: boolean }
@@ -132,7 +143,7 @@ export async function confirmProposal(userId: string, id: string, opts: { revisi
   const key = given || `proposal:${id}:${opts.revision}`;
   const requestHash = sha256hex(canonical({ id, revision: opts.revision }));
   const db = await getDb();
-  return db.tx(async (q) => {
+  const out = await db.tx(async (q): Promise<ConfirmOutcome> => {
     const ins = await q.query("INSERT INTO idempotency_keys(user_id, scope, key, request_hash, status, expires_at) VALUES ($1,'proposal_confirm',$2,$3,'processing',$4) ON CONFLICT DO NOTHING RETURNING key",
       [userId, key, requestHash, new Date(now.getTime() + 86_400_000)]);
     if (!ins.rows.length) {
@@ -199,4 +210,11 @@ export async function confirmProposal(userId: string, id: string, opts: { revisi
     p = rowToView(u.rows[0]);
     return finish(200, { proposal: p, result, alreadyApplied: false });
   });
+  // После коммита и только для первого применения: повтор/alreadyApplied/replay события не создают.
+  if (!out.replayed && out.status === 200 && out.body.alreadyApplied === false) {
+    const p = out.body.proposal as ProposalView;
+    await track(userId, "proposal_confirmed", { kind: p.payload.direction }, { channel: channelOf(p), key: p.id, now });
+    if (p.payload.direction === "expense") await track(userId, "expense_logged", { origin: p.payload.source === "form" ? "manual" : "chat" }, { channel: channelOf(p), key: p.id, now });
+  }
+  return out;
 }

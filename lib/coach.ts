@@ -1,21 +1,26 @@
 // Общий диалоговый слой для веба и Telegram. Финансовые факты — из движка, текст — шаблоны (§6.4).
+import { track } from "./analytics";
 import {
   addDays, formatRub, forecastToSnapshot, FUTURE_WINDOW_DAYS, GOAL_FUTURE_DAYS, localDate, PAST_WINDOW_DAYS, simulationToImpact,
   type Assessment, type Forecast, type ISODate, type Minor, type PurchaseImpact, type Scenario, type Simulation, type Snapshot,
 } from "./engine";
 import { amountCandidates, parseAmountDetailed, parseDate, parseIntentRegex, parsePaymentLines, toNominative, type PurchaseIntent } from "./parse";
-import { llmEnabled, parseIntentLLM } from "./ai/llm";
+import { llmEnabled, parseIntentLLM, type LlmIntent } from "./llm";
 import { getDb } from "./db";
 import { userTimezone } from "./finance-service";
 import { getForecast, savePlan, simulate, type CalculationMeta, type PlanInput } from "./finance-service";
 import { createEntryProposal, matchOccurrence, type ProposalView } from "./proposals";
 import { getState, setState, type Channel } from "./conversation";
+import { setCallType } from "./service-log";
+import { activateReferral } from "./referrals";
+import { isUuid } from "./util";
+import { ESSENTIAL_HINT, explainDecision, lastDecisionId, type ExplainResult } from "./explain";
 
 const rub = (m: Minor) => formatRub(m);
 /** Суммы, которые пользователь подтверждает (цена, запись, остаток после), показываются с копейками, если они есть. */
 const rubExact = (m: Minor) => formatRub(m, { kopecks: true });
 const MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
-export const humanDate = (d: ISODate) => `${+d.slice(8, 10)} ${MONTHS_GEN[+d.slice(5, 7) - 1]}`;
+export const humanDate = (d: ISODate) => `${+d.slice(8, 10)}\u00a0${MONTHS_GEN[+d.slice(5, 7) - 1]}`;
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // ---------- Шаблоны ----------
@@ -24,8 +29,8 @@ export function snapshotText(f: Forecast): string {
   const lines: string[] = [];
   const until = f.horizonKind === "until_income" ? `До дохода ${humanDate(f.horizonEnd)} — ${f.days} дн.` : `Ближайший доход не указан, поэтому смотрю на ${f.days} дн. вперёд, до ${humanDate(f.horizonEnd)}.`;
   lines.push(until);
-  if (f.freeMoneyMinor != null) lines.push(`Свободно ${rub(f.freeMoneyMinor > 0n ? f.freeMoneyMinor : 0n)}, спокойно тратить около ${rub(f.safeDailyMinor)} в день.`);
-  else lines.push(`На повседневную жизнь и покупки — около ${rub(f.safeDailyMinor)} в день.`);
+  if (f.freeMoneyMinor != null) lines.push(`Можно тратить около ${rub(f.safeDailyMinor)} в день до ${humanDate(f.horizonEnd)} — на еду, транспорт и покупки. Разово на покупки сверх еды и транспорта: ${rub(f.freeMoneyMinor > 0n ? f.freeMoneyMinor : 0n)}.`);
+  else lines.push(`Можно тратить около ${rub(f.safeDailyMinor)} в день до ${humanDate(f.horizonEnd)} — на еду, транспорт и покупки.`);
   if (f.overdueIncomes.length) lines.push(`Доход ${humanDate(f.overdueIncomes[0].dueOn)} ещё не отмечен, пока считаю без него. Когда придёт, просто напишите «зарплата пришла».`);
   const cash = f.gaps.mandatory ?? f.gaps.essential;
   if (cash) lines.push(`Обратите внимание: с ${humanDate(cash.firstDate)} может не хватать на обязательные траты, до ${rub(cash.amountMinor)} к ${humanDate(cash.worstDate)}.`);
@@ -37,10 +42,12 @@ export function snapshotText(f: Forecast): string {
   return lines.join("\n");
 }
 
-const HEAD: Record<Assessment, (item: string, price: string) => string> = {
-  fits_plan: (i, p) => `Можно. ${cap(i)} за ${p} укладывается в план.`,
-  reduces_daily_margin: (i, p) => `Можно, но после покупки (${i}, ${p}) запас на день станет заметно меньше.`,
-  touches_protected_money: (i, p) => `Сейчас ${i} за ${p} задела бы резерв или накопления на цель.`,
+// Заголовки ответа. «X за N ₽ — …» вместо «X … укладывается»: название покупки — свободный текст, глагол с ним не согласуется.
+// «Аккуратно» — по той же ветке, что и вердикт (assess): если повседневные траты указаны, сравнивается сумма в день сверх них.
+const HEAD: Record<Assessment, (item: string, price: string, essentialKnown: boolean) => string> = {
+  fits_plan: (i, p) => `Можно: ${i} за ${p} — в рамках плана.`,
+  reduces_daily_margin: (i, p, known) => `Можно, но аккуратно: ${i} за ${p} — ${known ? "денег сверх еды и транспорта на день останется меньше половины" : "денег на день останется меньше половины"}.`,
+  touches_protected_money: (i, p) => `Сейчас эта покупка (${i}, ${p}) задела бы резерв или деньги на цель.`,
   cash_gap: (i, p) => `Сейчас с покупкой (${i}, ${p}) лучше не спешить: может не хватить на обязательные траты.`,
   insufficient_data: () => "Пока не хватает данных, чтобы спокойно ответить.",
 };
@@ -48,8 +55,8 @@ const HEAD: Record<Assessment, (item: string, price: string) => string> = {
 function scenarioLine(s: Scenario): string {
   const f = s.forecast;
   const free = s.freeAfterMinor ?? s.envelopeAfterMinor;
-  let t = `останется ${rub(free > 0n ? free : 0n)}, около ${rub(s.safeDailyAfterMinor)} в день до ${humanDate(f.horizonEnd)}`;
-  if (s.firstGapDate) t += `; с ${humanDate(s.firstGapDate)} может не хватать, до ${rub(s.gapMinor)}`;
+  let t = `около ${rub(s.safeDailyAfterMinor)} в день до ${humanDate(f.horizonEnd)}, разово на покупки — ${rub(free > 0n ? free : 0n)}`;
+  if (s.firstGapDate) t += `; с ${humanDate(s.firstGapDate)} может не хватать, больше всего — ${rub(s.gapMinor)}`;
   else if (s.reserveShortfallMinor > 0n) t += `; резерв или накопления уменьшатся на ${rub(s.reserveShortfallMinor)}`;
   return t;
 }
@@ -57,9 +64,9 @@ function scenarioLine(s: Scenario): string {
 export function purchaseText(sim: Simulation): string {
   const n = sim.now, b = sim.baseline;
   const unknownEssential = b.limitations.includes("ESSENTIAL_SPENDING_UNKNOWN");
-  const lines = [unknownEssential && (n.assessment === "fits_plan" || n.assessment === "reduces_daily_margin")
-    ? `Похоже, можно: ${sim.item} за ${rubExact(n.priceMinor)} укладывается в план, если на еду, транспорт и другие нужды хватит около ${rub(n.safeDailyAfterMinor)} в день.`
-    : HEAD[n.assessment](sim.item, rubExact(n.priceMinor))];
+  const lines = [unknownEssential && n.assessment === "fits_plan"
+    ? `Похоже, можно: ${sim.item} за ${rubExact(n.priceMinor)} — в рамках плана, если на еду, транспорт и другие нужды хватит около ${rub(n.safeDailyAfterMinor)} в день.`
+    : HEAD[n.assessment](sim.item, rubExact(n.priceMinor), !unknownEssential)];
   lines.push(`Сейчас: около ${rub(b.safeDailyMinor)} в день до ${humanDate(b.horizonEnd)}.`);
   lines.push(`Если купить сейчас: ${scenarioLine(n)}.`);
   const a = sim.afterIncome;
@@ -68,7 +75,7 @@ export function purchaseText(sim: Simulation): string {
     if (sim.waitIsBetter) lines.push(`Если подождать до дохода ${humanDate(a.date)}: ${scenarioLine(a)}.${caveat}`);
     else lines.push(`После дохода ${humanDate(a.date)} тоже будет тесно: ${scenarioLine(a)}.${caveat}`);
   }
-  if (unknownEssential) lines.push("Сумма в день — на всё сразу. Если подскажете, сколько нужно в день на необходимое, оценка станет точнее.");
+  if (unknownEssential) lines.push(ESSENTIAL_HINT);
   lines.push("Решение за вами, я лишь показываю последствия.");
   return lines.join("\n");
 }
@@ -98,13 +105,18 @@ export interface ChatResult {
   forecast?: Forecast;
   meta?: CalculationMeta;
   decisionId?: string;
+  /** «А почему?»: объяснение последнего ответа «Можно?» (AI-ответ или шаблон с теми же числами). */
+  explain?: ExplainResult;
 }
+
+/** «Почему?», «объясни», «а почему так» — просьба объяснить последний ответ «Можно?». */
+export const isWhyQuestion = (t: string) => /^\s*(а\s+)?(почему|объясни|поясни|из-за\s+чего)(\s+так|\s+это|\s+нельзя|\s+можно)?\s*[?!.]*\s*$/i.test(t);
 
 interface Draft { pendingItem?: string; at?: string }
 const MAX_TEXT = 1000;
 
 /** Сумма из LLM принимается, только если её текст действительно есть в сообщении (Evidence §6.1). */
-function intentFromLlm(text: string, o: Awaited<ReturnType<typeof parseIntentLLM>>): PurchaseIntent {
+function intentFromLlm(text: string, o: LlmIntent): PurchaseIntent {
   const regex = parseIntentRegex(text);
   const norm = (s: string) => s.toLowerCase().replace(/[\s\u00a0]/g, "");
   if (regex.error) return { ...regex, intent: o.intent }; // ошибки детерминированного парсера не стираются
@@ -120,6 +132,14 @@ function intentFromLlm(text: string, o: Awaited<ReturnType<typeof parseIntentLLM
   return { intent: o.intent, item, priceMinor, price: priceMinor == null ? undefined : Number(priceMinor) / 100, ambiguous: regex.ambiguous };
 }
 
+/**
+ * Парсер «не уверен»: ничего не распознал, но в тексте есть слова (не пустое сообщение и не только знаки).
+ * Распознанное намерение, неоднозначные суммы и ошибки суммы LLM не исправляет (переспрашиваем), поэтому её не зовём.
+ */
+export function regexUnsure(r: PurchaseIntent, text: string): boolean {
+  return r.intent === "other" && !r.error && /[a-zа-яё]{2,}/i.test(text);
+}
+
 export async function answer(userId: string, rawText: string, opts: { now?: Date; channel?: Channel } = {}): Promise<ChatResult> {
   const now = opts.now ?? new Date();
   const channel = opts.channel ?? "web";
@@ -127,10 +147,24 @@ export async function answer(userId: string, rawText: string, opts: { now?: Date
   const view = await getForecast(userId, now);
   if (!view) return { reply: "Давайте сначала познакомимся: расскажите об остатке, доходе и платежах, и я смогу посчитать.", mode: "fallback", needsOnboarding: true };
 
-  let mode: ChatResult["mode"] = llmEnabled() ? "llm" : "fallback";
-  let intent: PurchaseIntent;
-  try { intent = mode === "llm" ? intentFromLlm(text, await parseIntentLLM(text)) : parseIntentRegex(text); }
-  catch { intent = parseIntentRegex(text); mode = "fallback"; }
+  // «А почему?» после ответа «Можно?» — объяснение (тратит AI-ответ, только если ответила модель; иначе шаблон).
+  if (isWhyQuestion(text)) {
+    const id = await lastDecisionId(userId, now);
+    const ex = id ? await explainDecision(userId, id, { now, channel: channel === "telegram" ? "telegram" : "web" }) : null;
+    if (ex) {
+      setCallType("chat.explain");
+      return { reply: ex.reply, mode: ex.mode === "ai" ? "llm" : "fallback", snapshot: forecastToSnapshot(view.forecast), forecast: view.forecast, meta: view.meta, explain: ex, decisionId: id! };
+    }
+  }
+
+  // Regex первым; LLM — только если детерминированный парсер не уверен (docs/LLM-COST.md §6). Любой отказ LLM
+  // (выключена, нет ключа, бюджет, таймаут, невалидный ответ) — остаётся regex, числа всё равно считает движок.
+  let mode: ChatResult["mode"] = "fallback";
+  let intent: PurchaseIntent = parseIntentRegex(text);
+  if (regexUnsure(intent, text) && llmEnabled()) {
+    const o = await parseIntentLLM(text, { userId, now });
+    if (o) { intent = intentFromLlm(text, o); mode = "llm"; }
+  }
 
   const draft = (await getState<Draft>(userId, channel)) ?? {};
   if (intent.intent === "amount_only" && draft.pendingItem) intent = { ...intent, intent: "purchase", item: draft.pendingItem };
@@ -147,6 +181,7 @@ export async function answer(userId: string, rawText: string, opts: { now?: Date
   }
 
   if (intent.intent === "purchase") {
+    setCallType("chat.question"); // журнал обращений: это вопрос «Можно?», а не просто сообщение
     if (intent.priceMinor == null || intent.priceMinor <= 0n) {
       await setState(userId, channel, { pendingItem: intent.item || "покупка", at: now.toISOString() });
       return { ...base, reply: `Сколько стоит ${intent.item || "покупка"}? Назовите сумму, и я посчитаю.` };
@@ -156,6 +191,11 @@ export async function answer(userId: string, rawText: string, opts: { now?: Date
     const sv = await simulate(userId, { item, priceMinor: intent.priceMinor }, text, now);
     // Свободный текст модели в ответ с финансовым решением не попадает (§6.4): только шаблон.
     const reply = purchaseText(sv.simulation);
+    // «Можно?»: только факт вопроса и корзина вердикта движка — без текста, суммы и товара.
+    const key = sv.decisionId;
+    await track(userId, "purchase_asked", {}, { channel, key, now });
+    await track(userId, "purchase_result", { verdict: sv.simulation.now.assessment, engine: mode }, { channel, key, now });
+    await activateReferral(userId, channel, now); // первый ответ «Можно?» — целевой сценарий приглашённого
     return { ...base, mode, reply, impact: simulationToImpact(sv.simulation, intent.priceMinor), simulation: sv.simulation, meta: sv.meta, decisionId: sv.decisionId };
   }
 
@@ -187,7 +227,28 @@ export async function answer(userId: string, rawText: string, opts: { now?: Date
   }
 
   if (intent.intent === "snapshot") return { ...base, reply: snapshotText(view.forecast) };
-  return { ...base, reply: "Я помогаю спокойно решить, можно ли сейчас позволить покупку, и записываю траты. Например: \"Можно купить наушники за 15 000?\" или \"Потратил 500 на кофе\"." };
+  return { ...base, reply: "Я помогаю спокойно решить, можно ли сейчас позволить покупку, и записываю траты. Например: «Можно купить наушники за 15 000?» или «Потратил 500 на кофе»." };
+}
+
+/**
+ * «Купил — записать» под ответом «Можно?»: предложение расхода ровно на товар и цену из сохранённого расчёта.
+ * Сумма и название берутся с сервера (decisions), а не от клиента; запись — только после «Записать» (confirmProposal).
+ * null — расчёт не найден (чужой, удалён) или без цены.
+ */
+export async function proposalFromDecision(userId: string, decisionId: string, channel: Channel, now = new Date()): Promise<{ reply: string; proposal: ProposalView } | null> {
+  if (!isUuid(decisionId)) return null;
+  const db = await getDb();
+  const row = (await db.query<{ input: { item?: string; priceMinor?: string } | string }>("SELECT input FROM decisions WHERE id=$1 AND user_id=$2", [decisionId, userId])).rows[0];
+  if (!row) return null;
+  const input = typeof row.input === "string" ? JSON.parse(row.input) : row.input;
+  const amount = /^\d+$/.test(String(input?.priceMinor ?? "")) ? BigInt(input.priceMinor) : 0n;
+  if (amount <= 0n) return null;
+  const item = String(input.item ?? "").trim() || "покупка";
+  const occ = await matchOccurrence(userId, item, "expense");
+  const proposal = await createEntryProposal(userId, { direction: "expense", amountMinor: amount, description: cap(item), occurrenceId: occ?.id ?? null, source: channel === "telegram" ? "telegram" : "chat" }, now);
+  const view = await getForecast(userId, now);
+  const after = view ? view.book.balanceMinor - amount : null;
+  return { reply: proposalText(proposal, after, occ?.name ?? null), proposal };
 }
 
 // ---------- Пошаговый онбординг (Telegram) ----------
@@ -195,10 +256,10 @@ export async function answer(userId: string, rawText: string, opts: { now?: Date
 const STEPS = [
   "Сколько сейчас денег на карте и в кошельке, которыми вы пользуетесь?",
   "Когда и сколько вы ожидаете получить в ближайший доход? Например: 25.10 80000",
-  "Какие обязательные платежи впереди? По одному в строке: Аренда 30000 20.10. Если их нет, напишите \"нет\".",
+  "Какие обязательные платежи впереди? По одному в строке: Аренда 30000 20.10. Если их нет, напишите «нет».",
   "Какую сумму хотите всегда держать в резерве? Например: 10000 или 0.",
-  "Есть ли цель накопления? Например: Отпуск 60000 01.06.2027. Если нет, напишите \"нет\".",
-  "И последнее: сколько примерно нужно в день на еду, транспорт и другие необходимые траты? Можно написать \"не знаю\".",
+  "Есть ли цель накопления? Например: Отпуск 60000 01.06.2027. Если нет, напишите «нет».",
+  "И последнее: сколько примерно нужно в день на еду, транспорт и другие необходимые траты? Можно написать «не знаю».",
 ];
 export const ONBOARDING_FIRST = STEPS[0];
 export const ONBOARDING_STEPS = STEPS.length;
@@ -257,7 +318,7 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
     case 2: {
       const r = parsePaymentLines(t, today);
       r.items = r.items.filter((p) => { if (inWindow(p.date, today)) return true; r.errors.push({ line: 0, text: p.name, reason: "дата дальше чем через год" }); return false; });
-      if (r.errors.length) return { reply: "Не все строки получилось понять:\n" + r.errors.map((e) => `• «${e.text}»: ${e.reason}`).join("\n") + "\nНапишите платежи ещё раз в формате: Аренда 30000 20.10, или \"нет\".", done: false };
+      if (r.errors.length) return { reply: "Не все строки получилось понять:\n" + r.errors.map((e) => `• «${e.text}»: ${e.reason}`).join("\n") + "\nНапишите платежи ещё раз в формате: Аренда 30000 20.10, или «нет».", done: false };
       d.payments = r.items.map((p) => ({ name: p.name, amountMinor: p.amountMinor.toString(), date: p.date })); break;
     }
     case 3: { const a = /^\s*(нет|0)\s*$/i.test(t) ? { minor: 0n, negative: false } : amount(t); if (a.minor == null || a.negative) return { reply: "Напишите сумму резерва числом, например 10000 или 0.", done: false }; d.reserveMinor = a.minor.toString(); break; }
@@ -266,7 +327,7 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
       else {
         const date = parseDate(t, today);
         const a = amount(t);
-        if (!date || a.minor == null || a.minor <= 0n) return { reply: "Укажите цель так: Отпуск 60000 01.06.2027, или \"нет\".", done: false };
+        if (!date || a.minor == null || a.minor <= 0n) return { reply: "Укажите цель так: Отпуск 60000 01.06.2027, или «нет».", done: false };
         if (!inWindow(date, today, GOAL_FUTURE_DAYS)) return { reply: "Дата цели должна быть в пределах десяти лет.", done: false };
         d.goal = { name: t.replace(/[-−]?\s*\d.*$/, "").trim() || "Цель", amountMinor: a.minor.toString(), date };
       }
@@ -276,7 +337,7 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
       let essential: Minor | null = null;
       if (!/(не знаю|незнаю|пропуст|нет|^-$)/i.test(t)) {
         const a = amount(t);
-        if (a.minor == null || a.negative) return { reply: "Напишите примерную сумму в день, например 1500, или \"не знаю\".", done: false };
+        if (a.minor == null || a.negative) return { reply: "Напишите примерную сумму в день, например 1500, или «не знаю».", done: false };
         essential = a.minor;
       }
       const plan: PlanInput = {
@@ -300,8 +361,9 @@ export async function onboardingStep(userId: string, text: string, opts: { now?:
         throw e;
       }
       await setState(userId, channel, null);
+      await activateReferral(userId, channel, now); // знакомство завершено (старый текстовый сценарий)
       const v = await getForecast(userId, now);
-      return { reply: "Готово, план сохранён.\n" + snapshotText(v!.forecast) + "\n\nТеперь можно спросить: \"Можно купить наушники за 15000?\" Текстом или голосом.", done: true };
+      return { reply: "Готово, план сохранён.\n" + snapshotText(v!.forecast) + "\n\nТеперь можно спросить: «Можно купить наушники за 15 000?» Текстом или голосом.", done: true };
     }
   }
   d.step += 1;

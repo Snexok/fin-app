@@ -156,11 +156,11 @@ describe("11. копейки и остаток от деления дневно�
     expect(f.safeDailyMinor * 3n <= rub(100)).toBe(true);
   });
   it("деньги в копейках", () => {
-    expect(rublesToMinor("1 500,50")).toBe(150050n);
+    expect(rublesToMinor("1\u00a0500,50")).toBe(150050n);
     expect(rublesToMinor(0.1 + 0.2)).toBe(30n);
     expect(() => rublesToMinor(Infinity)).toThrow();
-    expect(formatRub(150050n)).toBe("1 500 ₽");
-    expect(formatRub(150050n, { kopecks: true })).toBe("1 500,50 ₽");
+    expect(formatRub(150050n)).toBe("1\u00a0500\u00a0₽");
+    expect(formatRub(150050n, { kopecks: true })).toBe("1\u00a0500,50\u00a0₽");
     expect(floorDiv(-7n, 2n)).toBe(-4n);
   });
 });

@@ -11,8 +11,8 @@ describe("parse", () => {
   });
   it("dates", () => {
     expect(parseDate("25.10", T)).toBe("2026-10-25");
-    expect(parseDate("5 ноября", T)).toBe("2026-11-05");
-    expect(parseDate("10 октября", T)).toBe("2027-10-10");
+    expect(parseDate("5\u00a0ноября", T)).toBe("2026-11-05");
+    expect(parseDate("10\u00a0октября", T)).toBe("2027-10-10");
     expect(parseDate("через 10 дней", T)).toBe("2026-10-25");
     expect(parseDate("завтра", T)).toBe("2026-10-16");
   });
@@ -43,12 +43,12 @@ describe("parser bugs from §5", () => {
     expect(parseDate("10-го", T)).toBe("2026-11-10");
     expect(parseDate("20-го", T)).toBe("2026-10-20");
     expect(parseDate("31 числа", "2026-11-05")).toBe("2026-12-31"); // в ноябре нет 31-го: ближайшее реальное 31-е
-    expect(parseDate("1 июня 2027", T)).toBe("2027-06-01");
+    expect(parseDate("1\u00a0июня 2027", T)).toBe("2027-06-01");
   });
   it("даты удаляются одинаково перед разбором суммы", () => {
     expect(parseAmount("Аренда 30000 20.10")).toBe(30000);
     expect(parseAmount("25.10 80000")).toBe(80000);
-    expect(parseAmount("5 ноября 1000")).toBe(1000);
+    expect(parseAmount("5\u00a0ноября 1000")).toBe(1000);
     expect(parseAmount("1.5 млн")).toBe(1500000);
   });
   it("платежи: нераспознанные строки не отбрасываются молча", () => {

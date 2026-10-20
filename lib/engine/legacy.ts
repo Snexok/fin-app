@@ -36,6 +36,23 @@ export interface Snapshot {
   protectedShortfall: { date: ISODate; amount: number } | null;
   overdueIncome: boolean;
   limitations: string[];
+  /** Полоса плана: части, которые точно складываются в остаток на карте (только показ, расчёт не меняет). */
+  planBar: PlanBarRub;
+}
+
+/** Разложение остатка на карте для полосы плана. В копейках: payments + reserve + goal + life = balance ровно. */
+export interface PlanBar { balanceMinor: Minor; paymentsMinor: Minor; reserveMinor: Minor; goalMinor: Minor; lifeMinor: Minor }
+export interface PlanBarRub { balance: number; payments: number; reserve: number; goal: number; life: number }
+
+/**
+ * Полоса «На карте» = платежи до дохода + резерв + на цель + на жизнь до дохода.
+ * «На цель» — то, что по плану отложено к концу горизонта, плюс уже накопленное на карте (если оно защищено).
+ * «На жизнь» — разность; может быть отрицательной (на всё запланированное не хватает). Это те же величины, что вычитает движок.
+ */
+export function planBar(f: Forecast): PlanBar {
+  const paymentsMinor = f.mandatoryMinor, reserveMinor = f.reserveMinor;
+  const goalMinor = (f.goal?.setAsideInHorizonMinor ?? 0n) + f.protectedSavedMinor;
+  return { balanceMinor: f.balanceMinor, paymentsMinor, reserveMinor, goalMinor, lifeMinor: f.balanceMinor - paymentsMinor - reserveMinor - goalMinor };
 }
 
 export type Risk = "none" | "low" | "medium" | "high";
@@ -130,6 +147,7 @@ export function forecastToSnapshot(f: Forecast): Snapshot {
     protectedShortfall: f.gaps.protected ? { date: f.gaps.protected.firstDate, amount: R(f.gaps.protected.amountMinor) } : null,
     overdueIncome: f.overdueIncomes.length > 0,
     limitations: f.limitations,
+    planBar: (({ balanceMinor, paymentsMinor, reserveMinor, goalMinor, lifeMinor }) => ({ balance: R(balanceMinor), payments: R(paymentsMinor), reserve: R(reserveMinor), goal: R(goalMinor), life: R(lifeMinor) }))(planBar(f)),
   };
 }
 

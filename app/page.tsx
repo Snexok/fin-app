@@ -1,14 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import OnboardingChat from "./onboarding-chat";
+import RemindersSettings from "./reminders-settings";
+import { flushSync } from "react-dom";
+import { trackClient, wireAnalytics, firstVisitBody, pendingRef, clearPendingRef } from "./analytics-client";
+import { AnswerShareMenu, GiftIcon, InviteCard, InviteSheet, ShareResultSheet, safeItem } from "./invite";
+import { chipQuery, showStarterChips } from "./suggest-chips";
+import { shouldShowVerdictActions, smartSuggestionFor, type SmartSuggestion } from "./verdict-actions";
+import { ExplainBubble, ExplainButton, PlusCard, PlusSheet, TokenCounter, usePlan, type ExplainView, type PlusSurface } from "./plus";
+
+/** Онбординг-чат вместо формы. По умолчанию включён; NEXT_PUBLIC_CHAT_ONBOARDING=0 возвращает старую форму. */
+const CHAT_ONBOARDING = process.env.NEXT_PUBLIC_CHAT_ONBOARDING !== "0";
+type ObState = { phase: string; mode: string; planSaved: boolean; progress: number } | null;
 
 type Payment = { name: string; amount: number; date: string };
-type Snapshot = { daysToIncome: number; freeMoney: number; safeDaily: number; mandatoryBeforeIncome: number; goalSetAside: number; upcomingPayments: Payment[]; cashGap?: { date: string; amount: number } | null; limitations?: string[]; freeMoneyKnown?: boolean };
+type PlanBar = { balance: number; payments: number; reserve: number; goal: number; life: number };
+type Snapshot = { daysToIncome: number; freeMoney: number; safeDaily: number; mandatoryBeforeIncome: number; goalSetAside: number; upcomingPayments: Payment[]; cashGap?: { date: string; amount: number } | null; limitations?: string[]; freeMoneyKnown?: boolean; horizonEnd?: string; planBar?: PlanBar };
 type Profile = { balance: number; reserve: number; nextIncome: { date: string; amount: number }; payments: Payment[]; goal?: { name: string; amount: number; date: string; saved?: number } | null };
 type Decision = { at: string; question: string; item: string; price: number; verdict: string; freeAfter: number };
 type State = { id: string; profile: Profile | null; snapshot: Snapshot | null; history: Decision[]; llm: boolean; storage: string };
 
-const rub = (n: number) => `${(Math.floor(Math.abs(n) * 100 + 1e-6) / 100 * Math.sign(n)).toLocaleString("ru-RU", { maximumFractionDigits: 2, minimumFractionDigits: Number.isInteger(Math.round(n * 100) / 100) ? 0 : 2 })} ₽`;
+const rub = (n: number) => `${(Math.floor(Math.abs(n) * 100 + 1e-6) / 100 * Math.sign(n)).toLocaleString("ru-RU", { maximumFractionDigits: 2, minimumFractionDigits: Number.isInteger(Math.round(n * 100) / 100) ? 0 : 2 }).replace(/\s/g, "\u00a0")}\u00a0₽`;
 const LIMITS: Record<string, string> = {
   ESSENTIAL_SPENDING_UNKNOWN: "Повседневные траты пока не учтены. Можно добавить их в плане.",
   INCOME_OVERDUE: "Дата дохода прошла. Обновите её, когда будет время.",
@@ -57,10 +70,32 @@ function ProposalCard({ initial, onApplied }: { initial: Proposal; onApplied: ()
         : (
           <div className="proposal-actions">
             <button type="button" className="button-primary" disabled={state === "pending"} onClick={confirm}>{state === "pending" ? "Записываем…" : state === "error" ? "Повторить" : "Записать"}</button>
-            <button type="button" className="button-secondary" disabled={state === "pending"} onClick={reject}>Не нужно</button>
+            <button type="button" className="button-secondary" disabled={state === "pending"} onClick={reject}>Не записывать</button>
           </div>
         )}
     </div>
+  );
+}
+
+/** «✓ Купил» (aria: «Купил — записать») под ответом «Можно?»: сервер готовит предложение на товар и цену из расчёта, дальше — обычная ProposalCard. */
+function BoughtButton({ decisionId, onProposal }: { decisionId: string; onProposal: (r: { reply: string; proposal: Proposal }) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  return (
+    <>
+      <button type="button" className="va-bought" aria-label="Купил — записать" title="Купил — записать" disabled={busy} onClick={async () => {
+        setBusy(true); setErr("");
+        const tg = tgWebApp() as any;
+        if (tg?.HapticFeedback?.impactOccurred) tg.HapticFeedback.impactOccurred("light");
+        try {
+          const r = await post("/api/v1/proposals", { type: "from_decision", decisionId });
+          if (r.ok && r.j?.proposal) { onProposal({ reply: r.j.reply || "Проверьте запись и подтвердите.", proposal: r.j.proposal }); return; }
+          setErr(r.j?.error?.message || "Не получилось подготовить запись. Попробуйте ещё раз.");
+        } catch { setErr("Нет связи. Попробуйте ещё раз."); }
+        finally { setBusy(false); }
+      }}><Icon name="check" />{busy ? "…" : "Купил"}</button>
+      {err && <p className="proposal-note va-err" role="alert">{err}</p>}
+    </>
   );
 }
 
@@ -124,13 +159,13 @@ const SHORT: Record<string, string> = { balance: "На карте", incomeAmount
 const isoIn = (days: number) => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
 const isoDay = (day: number) => { const d = new Date(); if (d.getDate() >= day) d.setMonth(d.getMonth() + 1); d.setDate(day); return d.toISOString().slice(0, 10); };
 const daysUntil = (iso: string) => Math.round((new Date(iso + "T00:00:00").getTime() - new Date(new Date().toDateString()).getTime()) / 86400000);
-const shortDate = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+const shortDate = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("ru-RU", { day: "numeric", month: "short" }).replace(" ", "\u00a0");
 const untilDate = (iso: string) => {
   const n = daysUntil(iso);
   const label = new Date(iso + "T00:00:00").toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
   if (n <= 0) return "Сегодня";
   if (n === 1) return "До завтра";
-  return `До ${label}`;
+  return `До\u00a0${label}`; // «До» не отрывается от числа; месяц может перенестись на узкой карточке
 };
 const capName = (s: string) => { const t = (s || "").trim(); return t ? t.charAt(0).toLocaleUpperCase("ru-RU") + t.slice(1) : t; };
 const QUICK: Record<string, { label: string; value: () => string; add?: boolean }[]> = {
@@ -219,37 +254,107 @@ function CalendarSheet({ value, onPick, onClose }: { value: string; onPick: (v: 
   );
 }
 
-function BotReply({ text, impact }: { text: string; impact?: any }) {
+/** Строки расчёта после заголовка ответа (для запасного объяснения, если «Почему так?» не смог ответить). */
+const replyDetails = (text: string) => text.split("\n").filter(Boolean).slice(1);
+
+const VERDICT_TAG: Record<string, string> = { yes: "Можно", careful: "Можно, но аккуратно", wait: "Лучше подождать", no: "Пока не стоит" };
+const dayMonth = (iso: string) => new Date(iso + "T00:00:00").toLocaleDateString("ru-RU", { day: "numeric", month: "long" }).replace(" ", "\u00a0");
+
+/** Строка «было → станет»: подпись слева (тап — подсказка), значения справа. «Было» серым, «станет» жирным. */
+function DiffRow({ label, hint, before, after, warn = false }: { label: string; hint: string; before: string | null; after: string; warn?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={"vc-row" + (warn ? " is-warn" : "") + (open ? " is-open" : "")}>
+      <button type="button" className="vc-label" aria-expanded={open} onClick={() => { tap(); setOpen(!open); }}>
+        <span>{label}</span><span className="vc-i" aria-hidden="true">i</span>
+      </button>
+      <span className="vc-vals" aria-label={before ? `было ${before}, станет ${after}` : after}>
+        {before && <><span className="vc-before">{before}</span><span className="vc-arrow" aria-hidden="true">→</span></>}
+        <strong className="vc-after">{after}</strong>
+      </span>
+      {open && <p className="vc-hint">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * Карточка вердикта. Заголовок — первая строка ответа движка («Можно: X за N ₽ — в рамках плана.»; цена уже в нём,
+ * отдельной строки цены нет). Ниже — «Если купить · до <дата>»: было → станет для дневной суммы и «На покупки до дохода».
+ * Объяснение — только кнопкой «Почему так? ✦» (explainable); без неё строки расчёта видны сразу.
+ */
+function BotReply({ text, impact, explainable = false, highlight = null }: { text: string; impact?: any; explainable?: boolean; highlight?: string | null }) {
   const v = (impact?.verdict && VERDICT_ICON[impact.verdict] ? impact.verdict : "") || replyVerdict(text);
   const lines = text.split("\n").filter(Boolean);
   if (!v) return <div className="bubble bot">{text}</div>;
   const details = lines.slice(1);
+  const base = impact?.snapshot as Snapshot | undefined;
+  const until: string | undefined = impact?.scenarios?.now?.horizonEnd ?? base?.horizonEnd;
+  const foodKnown = base?.freeMoneyKnown !== false;
+  const free = (n: number) => (n < 0 ? `не хватит ${rub(-n)}` : rub(n));
   return (
     <div className={"verdict-card vc-" + v}>
+      <span className="vc-tag">{VERDICT_TAG[v]}</span>
       <div className="verdict-head">
         <span className={"verdict-dot v-" + v} aria-hidden="true"><Icon name={VERDICT_ICON[v]} /></span>
         <strong>{lines[0]}</strong>
       </div>
-      {impact && (
-        <div className="vc-diff" aria-label="Что изменится">
-          {typeof impact.freeAfter === "number" && (
-            <div className="vc-row"><span>Свободно после</span><strong>{rub(impact.freeAfter)}</strong></div>
-          )}
+      {impact && (typeof impact.safeDailyAfter === "number" || typeof impact.freeAfter === "number") && (
+        <div className="vc-diff" aria-label="Если купить">
+          <div className="vc-diff-head"><span>Если купить{until ? <> · до {dayMonth(until)}</> : null}</span>{base && <span className="vc-cols" aria-hidden="true">было → станет</span>}</div>
           {typeof impact.safeDailyAfter === "number" && (
-            <div className="vc-row"><span>В день станет</span><strong>{rub(impact.safeDailyAfter)}</strong></div>
+            <DiffRow label="Можно тратить в день" before={base ? rub(base.safeDaily) : null} after={rub(impact.safeDailyAfter)}
+              hint="На всё: еду, транспорт и покупки. Платежи, резерв и деньги на цель уже отложены." />
           )}
-          {typeof impact.price === "number" && (
-            <div className="vc-row"><span>Сумма проверки</span><strong>{rub(impact.price)}</strong></div>
+          {typeof impact.freeAfter === "number" && (
+            <DiffRow label="На покупки до дохода" before={base ? free(base.freeMoney) : null} after={free(impact.freeAfter)} warn={impact.freeAfter < 0}
+              hint={foodKnown ? "Столько можно потратить разово сверх платежей, резерва, цели и ежедневных трат на еду и транспорт, чтобы хватило до дохода."
+                : "Столько можно потратить разово сверх платежей, резерва и цели. Повседневные траты не указаны — из этой суммы нужны и деньги на еду с транспортом."} />
           )}
         </div>
       )}
-      {details.length > 0 && (
-        <details className="vc-why">
-          <summary>Почему?</summary>
-          <ul>{details.map((l, i) => <li key={i}>{l}</li>)}</ul>
-        </details>
+      {!explainable && details.length > 0 && (
+        <ul className="vc-lines">{details.map((l, i) => <li key={i} className={highlight && l === highlight ? "is-suggest" : undefined}>{l}</li>)}</ul>
       )}
     </div>
+  );
+}
+
+/**
+ * «Как считаем» — так, как считает движок (lib/engine/forecast.ts): из остатка откладываем платежи до дохода, резерв и цель;
+ * дневная сумма — наименьшая, при которой хватает в КАЖДЫЙ день до дохода (еда и транспорт входят в неё);
+ * «На покупки до дохода» — разово сверх ежедневных трат на еду и транспорт.
+ */
+function HowSheet({ s, income, essential, onClose }: { s: Snapshot; income: string; essential: number | null; onClose: () => void }) {
+  const b: PlanBar | undefined = s.planBar;
+  const days = s.daysToIncome;
+  return (
+    <Sheet title="Как считаем" onClose={onClose}>
+      <div className="how sheet-body">
+        <p className="how-lead">Смотрим на {days}{"\u00a0"}дн. — до дохода {dayMonth(income)}.</p>
+        {b && (
+          <ol className="how-calc" aria-label="Из чего складывается">
+            <li><span>На карте</span><strong>{rub(b.balance)}</strong></li>
+            <li><span>− платежи до дохода</span><strong>{rub(b.payments)}</strong></li>
+            <li><span>− резерв</span><strong>{rub(b.reserve)}</strong></li>
+            <li><span>− на цель</span><strong>{rub(b.goal)}</strong></li>
+            <li className="how-total"><span>= на жизнь до дохода</span><strong>{rub(b.life)}</strong></li>
+          </ol>
+        )}
+        <div className="how-step">
+          <span className="how-num" aria-hidden="true">1</span>
+          <div><strong>Можно тратить в день — {rub(s.safeDaily)}</strong>
+            <p>Это наименьшая сумма, при которой денег хватает в каждый день до дохода — даже перед самым крупным платежом. Поэтому она может быть меньше, чем «на жизнь», делённое на {days}{"\u00a0"}дн. Еда, транспорт и покупки входят в неё.</p></div>
+        </div>
+        <div className="how-step">
+          <span className="how-num" aria-hidden="true">2</span>
+          <div><strong>На покупки до дохода — {rub(Math.max(0, s.freeMoney))}</strong>
+            <p>{s.freeMoneyKnown === false
+              ? "Столько можно потратить разово сверх платежей, резерва и цели. Повседневные траты пока не указаны, поэтому из этой суммы нужны и деньги на еду с транспортом."
+              : `Столько можно потратить разово сверх платежей, резерва, цели и ежедневных трат на еду и транспорт${essential ? ` (${rub(essential)} в день)` : ""}, чтобы всё равно хватило до дохода.`}</p></div>
+        </div>
+        <p className="how-fine">{b && b.goal > 0 ? "«На цель» — то, что по плану нужно отложить до дохода, плюс уже накопленное на карте. " : ""}Решение за вами: мы только показываем последствия.</p>
+      </div>
+    </Sheet>
   );
 }
 
@@ -260,7 +365,7 @@ const QUESTIONS = [
   { key: "payments", q: "Какие обязательные платежи учесть до дохода? Можно пропустить.", ph: "Аренда", area: true },
   { key: "reserve", q: "Сколько хотите всегда держать в резерве?", ph: "10000" },
   { key: "essentialDaily", q: "Сколько нужно в день на еду и транспорт? Можно пропустить.", ph: "1000" },
-  { key: "goal", q: "Цель накопления (название сумма дата), можно пропустить.", ph: "Отпуск 60000 2027-06-01" },
+  { key: "goal", q: "На что копите? Название, сумма и дата — можно пропустить.", ph: "Отпуск 60000 2027-06-01" },
 ] as const;
 
 const NAV = [
@@ -348,7 +453,7 @@ function HistoryList({ items, onAsk }: { items: Feed; onAsk?: () => void }) {
             <span className={"decision-icon entry-icon" + (inc ? " is-income" : "")} aria-hidden="true">{inc ? "+" : "−"}</span>
             <div className="decision-copy">
               <strong>{capName(it.e.name || (inc ? "Доход" : "Расход"))}</strong>
-              <p>{inc ? "доход" : "трата"}<span aria-hidden="true"> · </span><time dateTime={it.at}>{hhmm(it.at)}</time></p>
+              <p>{inc ? "Доход" : "Трата"}<span aria-hidden="true"> · </span><time dateTime={it.at}>{hhmm(it.at)}</time></p>
             </div>
             <div className="decision-value">
               <strong>{inc ? "+" : "−"}{rub(Math.abs(v))}</strong>
@@ -364,16 +469,15 @@ function HistoryList({ items, onAsk }: { items: Feed; onAsk?: () => void }) {
           <div className="decision-copy">
             <strong>{capName(h.item)}</strong>
             <p>
-              Проверка покупки
-              <span aria-hidden="true"> · </span>
-              {VERDICT[h.verdict] || h.verdict}
+              Вопрос
               <span aria-hidden="true"> · </span>
               <time dateTime={h.at}>{hhmm(h.at)}</time>
             </p>
-            <p className="decision-remain">Останется {rub(h.freeAfter)}</p>
+            <p className={"decision-remain" + (h.freeAfter < 0 ? " is-warn" : "")}>{h.freeAfter < 0 ? `После покупки не хватило бы ${rub(-h.freeAfter)}` : `На покупки после: ${rub(h.freeAfter)}`}</p>
           </div>
           <div className="decision-value">
             <strong>{rub(h.price)}</strong>
+            <span className={"verdict-chip v-" + h.verdict}>{VERDICT_TAG[h.verdict] || h.verdict}</span>
           </div>
         </li>
       ))(it.d))}
@@ -447,7 +551,7 @@ function Onboarding({ onDone, initial, baseVersion, onConflict }: { onDone: () =
       <div className="onboarding-heading">
         <span className="eyebrow">Ваш личный план</span>
         <span className="muted">
-          {isReview ? "Проверка" : `${step + 1} / ${QUESTIONS.length}`}
+          {isReview ? "Итог" : `${step + 1} / ${QUESTIONS.length}`}
         </span>
       </div>
       <div className="step-track" aria-hidden="true">
@@ -574,7 +678,19 @@ export default function Home() {
   const [st, setSt] = useState<State | null>(null);
   const [authErr, setAuthErr] = useState("");
   const [edit, setEdit] = useState(false);
-  const [msgs, setMsgs] = useState<{ me: boolean; text: string; impact?: any; proposal?: Proposal }[]>([]);
+  // Держим чат на экране, пока грузится главная: смена экрана — одним коммитом внутри View Transition.
+  const [holdChat, setHoldChat] = useState(false);
+  const [remOpen, setRemOpen] = useState(false);
+  const [howOpen, setHowOpen] = useState(false);
+  const [invite, setInvite] = useState<null | "answer" | "menu">(null);
+  const [shareRes, setShareRes] = useState<null | { verdict: string; item: string | null }>(null);
+  const [chat, setChat] = useState<null | { mode: "initial" | "edit"; slot?: string; from?: string }>(null);
+  const [ob, setOb] = useState<ObState>(null);
+  const [later, setLater] = useState(false);
+  const [msgs, setMsgs] = useState<{ me: boolean; text: string; impact?: any; proposal?: Proposal; decisionId?: string; explained?: boolean; explain?: ExplainView; bought?: boolean; smartSuggestion?: SmartSuggestion | null }[]>([]);
+  const [plusOpen, setPlusOpen] = useState<PlusSurface | null>(null);
+  const [planTick, setPlanTick] = useState(0);
+  const [plan, setPlan] = usePlan(!!st, planTick);
   const [sMode, setSMode] = useState<"want" | "bought">("want");
   const [sheet, setSheet] = useState(false);
   const [sAmt, setSAmt] = useState("");
@@ -586,6 +702,7 @@ export default function Home() {
   const [tab, setTab] = useState<(typeof NAV)[number]["id"]>("home");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { if (st) trackClient({ name: "screen_viewed", props: { screen: tab } }); }, [tab, !!st]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { const el = logRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: reduced() ? "auto" : "smooth" }); }, [msgs, busy, tab]);
   // GET не создаёт аккаунт: в Telegram Mini App вход по initData, в браузере — явное создание сессии.
   const load = async (): Promise<void> => {
@@ -593,11 +710,30 @@ export default function Home() {
     if (r.status === 401) {
       const init = tgWebApp()?.initData;
       if (init) { const s = await post("/api/v1/session/telegram", { initData: init }); if (!s.ok) { setAuthErr("Не удалось подтвердить вход через Telegram. Откройте приложение из бота ещё раз."); return; } }
-      else await post("/api/v1/session");
+      else { await post("/api/v1/session", firstVisitBody()); clearPendingRef(); }
       r = await apiGet("/api/profile");
+    } else if (!tgWebApp()?.initData && (new URLSearchParams(window.location.search).has("team") || pendingRef())) {
+      // уже есть сессия: только пометка команды по коду; приглашение существующему аккаунту не засчитывается (сервер отметит «existing»)
+      await post("/api/v1/session", firstVisitBody()); clearPendingRef();
     }
-    if (r.ok) setSt(await r.json());
+    if (r.ok) { setSt(await r.json()); wireAnalytics(); }
+    if (CHAT_ONBOARDING) apiGet("/api/v1/onboarding").then((x) => (x.ok ? x.json() : null)).then((j) => setOb(j?.state ?? null)).catch(() => {});
   };
+  const closeChat = useCallback((done: boolean) => {
+    const swap = () => setChat((c) => { if (c?.from) setTab(c.from as (typeof NAV)[number]["id"]); return null; });
+    if (!done) { swap(); setLater(true); load(); return; }
+    // Итог → карточка дня: сначала данные, затем один синхронный коммит внутри startViewTransition (без рассинхрона React).
+    const doc = document as Document & { startViewTransition?: (cb: () => void) => { finished: Promise<void> } };
+    const calm = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (!doc.startViewTransition || calm) { swap(); load(); return; }
+    setHoldChat(true);
+    // ob-vt: на время перехода гасим входные fadeUp главной, иначе новый снимок захватывается прозрачным.
+    load().finally(() => {
+      const root = document.documentElement; root.classList.add("ob-vt");
+      const t = doc.startViewTransition!(() => flushSync(() => { setHoldChat(false); swap(); }));
+      t.finished.finally(() => root.classList.remove("ob-vt"));
+    });
+  }, []);
   useEffect(() => {
     const tg = tgWebApp();
     if (!tg) return;
@@ -623,7 +759,9 @@ export default function Home() {
     setMsgs((m) => [...m, { me: true, text }]); setInput(""); setBusy(true);
     try {
       const r = await fetch("/api/chat", { method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: text }) }).then((r) => r.json());
-      setMsgs((m) => [...m, { me: false, text: r.reply || r.error?.message || "Не получилось ответить. Попробуйте ещё раз.", impact: r.impact, proposal: r.proposal }]); load();
+      const ex: ExplainView | undefined = r.explain ? { reply: r.explain.reply, mode: r.explain.mode, note: r.explain.note ?? null, exhausted: !!r.explain.tokens?.exhausted && r.explain.reason === "quota" } : undefined;
+      setMsgs((m) => [...m, { me: false, text: r.reply || r.error?.message || "Не получилось ответить. Попробуйте ещё раз.", impact: r.impact, proposal: r.proposal, decisionId: ex ? undefined : r.decisionId, explain: ex, smartSuggestion: smartSuggestionFor(r.impact, r.reply) }]); load();
+      if (ex) setPlanTick((x) => x + 1);
     } finally { setBusy(false); }
   }
 
@@ -670,6 +808,21 @@ export default function Home() {
   );
 
   const s = st.snapshot;
+  if (CHAT_ONBOARDING && (chat || holdChat || (!st.profile && !later))) {
+    return <OnboardingChat key={chat ? `${chat.mode}-${chat.slot ?? ""}` : "initial"} mode={chat?.mode ?? "initial"} slot={chat?.slot} onClose={closeChat} />;
+  }
+  if (CHAT_ONBOARDING && !st.profile && later) return (
+    <main className="app-shell loading-screen">
+      <header className="app-header"><div><p className="brand-caption">Можно?</p><h1>Финансы</h1></div></header>
+      <section className="ob-later-screen glass">
+        <Orb />
+        <p><strong>Всё сохранено</strong><br />Осталось пару вопросов, и я посчитаю, сколько можно тратить.</p>
+        <button type="button" className="button-primary full-width" onClick={() => { setLater(false); setChat({ mode: "initial" }); }}>Продолжить знакомство</button>
+      </section>
+    </main>
+  );
+  const editSlot = (slot: string) => { tap(); setChat({ mode: "edit", slot, from: tab }); };
+  const profileIncomplete = CHAT_ONBOARDING && !!ob && ob.mode === "initial" && ob.phase !== "done" && !!st.profile;
 
   return (
     <main className={"app-shell" + (st.profile && !edit ? " has-navigation" : "")} id="main-content">
@@ -680,32 +833,35 @@ export default function Home() {
           <h1>Финансы</h1>
         </div>
         <div className="header-actions">
-          <span className="notification-icon" role="img" aria-label="Уведомления">
+          {st.profile && (
+            <button type="button" className="notification-icon invite-icon" aria-label="Пригласить друга" onClick={() => { tap(); setInvite("menu"); }}>
+              <GiftIcon />
+            </button>
+          )}
+          <button type="button" className="notification-icon" aria-label="Напоминания" onClick={() => { tap(); setRemOpen(true); }}>
             <Icon name="bell" />
-            <span className="notification-dot" />
-          </span>
+          </button>
           <button type="button" className="avatar" aria-label="Изменить данные профиля" onClick={() => setEdit(true)}>КД</button>
         </div>
       </header>
 
       <div id="workspace" className="workspace">
-        {!st.profile || edit ? (
+        {!st.profile || edit ? ( // при CHAT_ONBOARDING новые пользователи сюда не попадают (чат выше); форма — «Изменить данные»
           <Onboarding initial={st.profile} baseVersion={(st as any).meta?.financeVersion ?? null} onDone={() => { setEdit(false); load(); }} />
         ) : (
           <>
             <section hidden={tab !== "home"} aria-label="Главная">
-              <section className="daily-card" aria-labelledby="daily-title">
+              <section className="daily-card" aria-labelledby="daily-title" style={{ viewTransitionName: "ob-hero" }}>
                 <Wallet />
                 <div className="daily-heading">
                   <h2 id="daily-title">Можно тратить в день</h2>
                   <span className="income-badge" title={"Доход " + st.profile.nextIncome.date}>{untilDate(st.profile.nextIncome.date)} <Icon name="chevron" /></span>
                 </div>
                 <p className="daily-amount"><Money value={s!.safeDaily} /></p>
-                <p className="daily-free">Свободно до дохода: <strong>{rub(s!.freeMoney)}</strong></p>
-                <details className="calc-how">
-                  <summary>Как рассчитано</summary>
-                  <p>Свободные деньги до дохода делим на {s!.daysToIncome} дн. — получается безопасный дневной лимит. Обязательные платежи и резерв уже вычтены.</p>
-                </details>
+                <p className="daily-sub">на еду, транспорт и покупки</p>
+                <p className="daily-free">На покупки до дохода: <strong>{rub(Math.max(0, s!.freeMoney))}</strong>{s!.freeMoney < 0 && <> · не хватает {rub(-s!.freeMoney)}</>}</p>
+                {s!.freeMoneyKnown === false && <p className="daily-note">Из этой суммы нужны и деньги на еду с транспортом</p>}
+                <button type="button" className="calc-how-btn" onClick={() => { tap(); setHowOpen(true); }}>Как считаем <Icon name="chevron" /></button>
                 <div className="hero-actions">
                   <button type="button" className="button-primary" onClick={() => { tap(); setTab("assistant"); }}>
                     <Icon name="spark" /><span>Можно?</span>
@@ -720,6 +876,9 @@ export default function Home() {
                 </div>
               </section>
 
+              {profileIncomplete && (
+                <button type="button" className="soft-note ob-resume-badge" onClick={() => setChat({ mode: "initial" })}><Icon name="spark" />Профиль не завершён — пара вопросов</button>
+              )}
               {s!.cashGap && (
                 <p className="soft-note note-amber" role="status"><Icon name="clock" />{shortDate(s!.cashGap.date)} может не хватить {rub(s!.cashGap.amount)} на обязательные платежи. Стоит отложить крупные траты.</p>
               )}
@@ -776,43 +935,56 @@ export default function Home() {
             <section hidden={tab !== "plan"} aria-labelledby="plan-title">
               <div className="page-heading page-heading-soft"><p id="plan-title" className="page-lead">Как распределены деньги до дохода</p></div>
               {(() => {
+                // Части полосы точно складываются в «На карте» (lib/engine/legacy.ts planBar): на жизнь = на карте − платежи − резерв − цель.
+                const b: PlanBar = s!.planBar ?? { balance: st.profile!.balance, payments: s!.mandatoryBeforeIncome, reserve: st.profile!.reserve, goal: s!.goalSetAside, life: st.profile!.balance - s!.mandatoryBeforeIncome - st.profile!.reserve - s!.goalSetAside };
+                const short = b.life < 0;
                 const parts = [
-                  { k: "pay", label: "Платежи", v: s!.mandatoryBeforeIncome },
-                  { k: "res", label: "Резерв", v: st.profile!.reserve },
-                  { k: "goal", label: "На цель", v: s!.goalSetAside },
-                  { k: "free", label: "Свободно", v: Math.max(0, s!.freeMoney) },
+                  { k: "pay", label: "Платежи до дохода", v: b.payments },
+                  { k: "res", label: "Резерв", v: b.reserve },
+                  { k: "goal", label: "На цель", v: b.goal },
+                  { k: "life", label: "На жизнь до дохода", v: Math.max(0, b.life) },
                 ];
-                const total = parts.reduce((x, p) => x + p.v, 0) || 1;
+                const scale = (short ? b.payments + b.reserve + b.goal : b.balance) || 1;
                 return (
                   <section className="plan-hero glass" aria-label="Распределение">
                     <div className="plan-hero-top">
-                      <span>На карте</span>
+                      <span>На карте {CHAT_ONBOARDING && <button type="button" className="edit-link" onClick={() => editSlot("balance")}>Изменить</button>}</span>
                       <span className="plan-chip">{untilDate(st.profile!.nextIncome.date)}</span>
                     </div>
-                    <p className="plan-balance">{rub(st.profile!.balance)}</p>
-                    <div className="plan-bar" aria-hidden="true">
-                      {parts.map((p) => p.v > 0 && <span key={p.k} className={"pb-" + p.k} style={{ flexGrow: p.v / total }} />)}
+                    <p className="plan-balance">{rub(b.balance)}</p>
+                    <div className={"plan-bar" + (short ? " is-short" : "")} aria-hidden="true">
+                      {parts.map((p) => p.v > 0 && <span key={p.k} className={"pb-" + p.k} style={{ flexGrow: p.v / scale }} />)}
+                      {short && <em className="pb-gap" style={{ left: `${Math.max(0, (b.balance / scale) * 100)}%` }} />}
                     </div>
                     <ul className="plan-legend">
                       {parts.map((p) => (
-                        <li key={p.k}><i className={"pb-" + p.k} aria-hidden="true" /><span>{p.label}</span><strong>{rub(p.v)}</strong></li>
+                        <li key={p.k}><i className={"pb-" + p.k} aria-hidden="true" /><span>{p.label}{CHAT_ONBOARDING && p.k === "res" && <> <button type="button" className="edit-link" onClick={() => editSlot("reserve")}>Изменить</button></>}</span><strong>{rub(p.v)}</strong></li>
                       ))}
                     </ul>
+                    {short ? <p className="plan-short" role="status">На всё запланированное не хватает {rub(-b.life)}</p>
+                      : <p className="plan-sum">Платежи + резерв + цель + на жизнь = {rub(b.balance)}</p>}
                   </section>
                 );
               })()}
               <div className="plan-tiles">
-                <section className="plan-tile glass" aria-label="Доход">
-                  <span className="tile-label">Следующий доход</span>
-                  <strong>{rub(st.profile.nextIncome.amount)}</strong>
-                  <span className="tile-sub">{untilDate(st.profile.nextIncome.date)}</span>
-                </section>
-                <section className="plan-tile glass" aria-label="В день">
-                  <span className="tile-label">Безопасно в день</span>
+                <section className="plan-tile plan-tile-key glass" aria-label="Можно тратить в день">
+                  <span className="tile-label">Можно тратить в день</span>
                   <strong>{rub(s!.safeDaily)}</strong>
-                  <span className="tile-sub">до {shortDate(st.profile.nextIncome.date)}</span>
+                  <span className="tile-sub">на всё · до {shortDate(st.profile.nextIncome.date)}</span>
+                </section>
+                <section className="plan-tile plan-tile-key glass" aria-label="На покупки до дохода">
+                  <span className="tile-label">На покупки до дохода</span>
+                  <strong>{rub(Math.max(0, s!.freeMoney))}</strong>
+                  <span className="tile-sub">{s!.freeMoney < 0 ? `не хватает ${rub(-s!.freeMoney)}` : s!.freeMoneyKnown === false ? "еда и транспорт не указаны" : "разово, сверх еды и транспорта"}</span>
+                </section>
+                <section className="plan-tile plan-tile-wide glass" aria-label="Следующий доход">
+                  <div><span className="tile-label">Следующий доход</span>
+                  <strong>{rub(st.profile.nextIncome.amount)}</strong></div>
+                  <span className="tile-sub">{untilDate(st.profile.nextIncome.date)}</span>
+                  {CHAT_ONBOARDING && <button type="button" className="edit-link" onClick={() => editSlot("income")}>Изменить</button>}
                 </section>
               </div>
+              <button type="button" className="calc-how-btn on-dark" onClick={() => { tap(); setHowOpen(true); }}>Как считаем <Icon name="chevron" /></button>
               <section className="plan-goal glass" aria-labelledby="plan-goal-title">
                 <div>
                   <span className="tile-label" id="plan-goal-title">Цель</span>
@@ -824,6 +996,7 @@ export default function Home() {
                   ) : (
                     <span className="tile-sub">Цели пока нет. Добавить можно в любой момент.</span>
                   )}
+                  {CHAT_ONBOARDING && <button type="button" className="edit-link" onClick={() => editSlot("goal")}>{st.profile.goal ? "Изменить" : "Добавить цель"}</button>}
                 </div>
                 <GoalArt />
               </section>
@@ -831,6 +1004,8 @@ export default function Home() {
                 <Icon name="edit" />Изменить данные
               </button>
               <TelegramLink linked={!!(st as any).account?.telegramLinked} onLinked={load} />
+              <InviteCard onOpen={() => setInvite("menu")} />
+              <PlusCard plan={plan} onOpen={() => setPlusOpen("menu")} />
               {!tgWebApp()?.initData && (
                 <button type="button" className="button-secondary full-width" onClick={async () => { await post("/api/v1/session/logout"); setSt(null); load(); }}>
                   Выйти на этом устройстве
@@ -840,7 +1015,8 @@ export default function Home() {
 
             <section hidden={tab !== "assistant"} className="conversation glass" aria-labelledby="chat-title">
               <header className="panel-heading">
-                <div><span className="eyebrow muted">Ваш помощник</span><h2 id="chat-title">Обсудим покупку?</h2></div>
+                <div><span className="eyebrow muted">Ваш помощник</span><h2 id="chat-title">Обсудим покупку?</h2>
+                  <TokenCounter plan={plan} onOpen={() => setPlusOpen("counter")} /></div>
                 <Orb />
               </header>
               <div className="messages" ref={logRef} role="log" aria-label="Разговор о покупке" aria-live="polite" aria-relevant="additions" tabIndex={0}>
@@ -857,7 +1033,27 @@ export default function Home() {
                 {msgs.map((m, i) => (
                   <div key={i} className={"message " + (m.me ? "message-me" : "message-bot")}>
                     <span className="message-author">{m.me ? "Вы" : "Можно?"}</span>
-                    {m.me ? <div className="bubble me">{m.text}</div> : <><BotReply text={m.text} impact={m.impact} />{m.proposal && <ProposalCard initial={m.proposal} onApplied={load} />}</>}
+                    {m.me ? <div className="bubble me">{m.text}</div> : m.explain ? <ExplainBubble r={m.explain} onPlus={() => setPlusOpen("exhausted")} /> : <><BotReply text={m.text} impact={m.impact} explainable={shouldShowVerdictActions(m) && !!m.decisionId} highlight={m.smartSuggestion?.line ?? null} />{m.proposal && <ProposalCard initial={m.proposal} onApplied={load} />}
+                      {/* Умный сценарий (прогноз движка) — показываем его строкой в карточке, без кнопок; иначе — демо-строка действий. */}
+                      {shouldShowVerdictActions(m) && (() => {
+                        const canBuy = !!m.decisionId && !m.bought && Number(m.impact.price) > 0;
+                        const canWhy = !!m.decisionId && !m.explained;
+                        // Поделиться — пока после ответа не было нового вопроса (объяснение и карточка записи не в счёт).
+                        const canShare = msgs.slice(i + 1).every((x) => !x.me);
+                        if (!canBuy && !canWhy && !canShare) return null;
+                        return (
+                          <div className="verdict-actions" role="group" aria-label="Действия с ответом">
+                            {canBuy && <BoughtButton decisionId={m.decisionId!} onProposal={(r) => setMsgs((ms) => {
+                              const c = ms.map((x, j) => (j === i ? { ...x, bought: true } : x));
+                              let at = i + 1; while (c[at] && c[at].explain) at++; // после «Почему так?», если оно уже открыто
+                              c.splice(at, 0, { me: false, text: r.reply, proposal: r.proposal });
+                              return c;
+                            })} />}
+                            {canWhy && <ExplainButton decisionId={m.decisionId!} fallback={replyDetails(m.text)} onResult={(r) => { setMsgs((ms) => { const c = ms.map((x, j) => (j === i ? { ...x, explained: true } : x)); c.splice(i + 1, 0, { me: false, text: r.reply, explain: r }); return c; }); setPlanTick((x) => x + 1); }} />}
+                            {canShare && <AnswerShareMenu onShare={() => setShareRes({ verdict: m.impact.verdict, item: safeItem(m.impact.item) })} onInvite={() => setInvite("answer")} />}
+                          </div>
+                        );
+                      })()}</>}
                   </div>
                 ))}
                 {busy && (
@@ -867,10 +1063,11 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              {!busy && (
+              {/* Демо-подсказки — только пока чат пустой; после первого вопроса строки нет. */}
+              {!busy && showStarterChips(msgs) && (
                 <div className="chips suggest-chips" role="group" aria-label="Подсказки">
                   {SUGGEST.map((q) => (
-                    <button key={q} type="button" className="chip" onClick={() => send(/^Можно|^Сколько/.test(q) ? q : "Можно купить " + q.charAt(0).toLowerCase() + q.slice(1))}>{q}</button>
+                    <button key={q} type="button" className="chip" onClick={() => send(chipQuery(q))}>{q}</button>
                   ))}
                 </div>
               )}
@@ -932,7 +1129,7 @@ export default function Home() {
             </section>
 
             <section hidden={tab !== "history"} aria-labelledby="history-title">
-              <div className="page-heading"><h2 id="history-title">История</h2><p className="muted">Проверки покупок и записанные траты</p></div>
+              <div className="page-heading"><h2 id="history-title">История</h2><p className="muted">Вопросы о покупках и траты</p></div>
               {st.history.length > 0 && (
                 <div className="verdict-summary" aria-label="Итоги">
                   {(["yes", "careful", "wait", "no"] as const).map((v) => {
@@ -951,10 +1148,6 @@ export default function Home() {
         <details className="technical-details">
           <summary>О приложении</summary>
           <p>Решение остаётся за вами.</p>
-          <dl>
-            <div><dt>Режим</dt><dd>{st.llm ? "Языковая модель" : "Без ключа, шаблоны"}</dd></div>
-            <div><dt>Хранилище</dt><dd>{st.storage}</dd></div>
-          </dl>
         </details>
       </footer>
 
@@ -977,6 +1170,11 @@ export default function Home() {
           <div className="home-indicator" aria-hidden="true" />
         </nav>
       )}
+      {remOpen && <Sheet title="Напоминания" onClose={() => setRemOpen(false)}><RemindersSettings /></Sheet>}
+      {howOpen && st.profile && s && <HowSheet s={s} income={st.profile.nextIncome.date} essential={(st.profile as any).essentialDaily ?? null} onClose={() => setHowOpen(false)} />}
+      {invite && <InviteSheet surface={invite} onClose={() => setInvite(null)} />}
+      {plusOpen && <PlusSheet plan={plan} surface={plusOpen} onClose={() => setPlusOpen(null)} onChanged={setPlan} />}
+      {shareRes && <ShareResultSheet verdict={shareRes.verdict} item={shareRes.item} onClose={() => setShareRes(null)} />}
       {sheet && (
         <Sheet title="Добавить трату" onClose={() => setSheet(false)}>
           <div className="sheet-body">

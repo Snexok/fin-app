@@ -8,7 +8,7 @@ describe("telegram-style onboarding + fallback chat", () => {
   it("collects profile step by step and answers", async () => {
     const id = (await telegramUserId(1))!;
     await startOnboarding(id);
-    for (const msg of ["60 000", "25.10 80000", "Аренда 30000 20.10", "10к", "нет"]) expect((await onboardingStep(id, msg, { now: NOW })).done).toBe(false);
+    for (const msg of ["60\u00a0000", "25.10 80000", "Аренда 30000 20.10", "10к", "нет"]) expect((await onboardingStep(id, msg, { now: NOW })).done).toBe(false);
     const last = await onboardingStep(id, "не знаю", { now: NOW });
     expect(last.done).toBe(true);
     const v = (await getForecast(id, NOW))!;
@@ -19,7 +19,7 @@ describe("telegram-style onboarding + fallback chat", () => {
     const r = await answer(id, "Можно купить наушники за 3000?", { now: NOW, channel: "telegram" });
     expect(r.mode).toBe("fallback");
     expect(r.impact?.verdict).toBe("yes");
-    expect(r.reply).toContain("17 000 ₽");
+    expect(r.reply).toContain("17\u00a0000\u00a0₽");
     expect(await listDecisions(id)).toHaveLength(1);
   });
 
