@@ -46,5 +46,8 @@ export const LIMITS = {
   writePerUserDay: (u: string) => ({ key: `write:ud:${u}`, limit: 1000, windowSec: 86_400 }),
   planPerUser: (u: string) => ({ key: `plan:u:${u}`, limit: 20, windowSec: 3600 }),
   linkPerUser: (u: string) => ({ key: `link:u:${u}`, limit: 10, windowSec: 3600 }),
+  analyticsPerUser: (u: string) => ({ key: `an:u:${u}`, limit: 60, windowSec: 60 }),
+  analyticsPerUserDay: (u: string) => ({ key: `an:ud:${u}`, limit: 2000, windowSec: 86_400 }),
   tgLoginPerIp: (ip: string) => ({ key: `tglogin:ip:${ip}`, limit: 60, windowSec: 3600 }),
+  interestPerUser: (u: string) => ({ key: `plus:u:${u}`, limit: 20, windowSec: 3600 }),
 };
