@@ -1,0 +1,52 @@
+flowchart TB
+  subgraph L1["1. Каналы"]
+    direction LR
+    W["Веб + Mini App<br/>app/page.tsx, onboarding-chat.tsx"]
+    B["Telegram-бот<br/>lib/bot.ts (grammY)"]
+    CRON["Vercel Cron"]
+  end
+  subgraph L2["2. HTTP (app/api, Route Handlers)"]
+    direction LR
+    H1["Сессии<br/>/api/v1/session[/telegram]"]
+    H2["«Можно?»<br/>/api/chat, /finance/simulations"]
+    H3["Знакомство<br/>/api/v1/onboarding[/turn]"]
+    H4["План и записи<br/>/api/profile, /proposals, /entries"]
+    H5["Аналитика, напоминания<br/>/api/v1/analytics, /reminders"]
+    H6["Webhook /api/telegram<br/>cron /api/cron/*"]
+  end
+  subgraph L3["3. Общий слой (lib)"]
+    direction LR
+    G["api.ts: Origin, лимит тела, ошибки<br/>auth.ts: sha256-токены<br/>rate-limit.ts: лимиты в БД"]
+    COACH["coach.ts + parse.ts<br/>ответы-шаблоны"]
+    ORCH["onboarding/*<br/>RulePolicy"]
+    PROP["proposals.ts<br/>идемпотентность"]
+    REM["reminders.ts"]
+    ANL["analytics.ts<br/>HMAC-псевдоним"]
+    INB["telegram-webhook.ts<br/>durable inbox"]
+  end
+  subgraph L4["4. Финансы"]
+    direction LR
+    FS["finance-service.ts<br/>план, прогноз, decisions"]
+    ENG["engine/*<br/>детерминированно, копейки bigint"]
+    LLM["ai/llm.ts<br/>намерение + STT (опц.)"]
+  end
+  DB[("Postgres (Neon) / PGlite локально<br/>миграции 001-006")]
+  W --> H1 & H2 & H3 & H4 & H5
+  B --> INB
+  CRON --> H6
+  H6 --> INB & REM
+  H2 --> COACH
+  H3 --> ORCH
+  H4 --> PROP
+  H5 --> ANL & REM
+  INB --> COACH & ORCH & PROP
+  COACH --> FS
+  COACH -.-> LLM
+  ORCH --> FS
+  PROP --> FS
+  REM --> FS
+  FS --> ENG
+  G --> DB
+  FS --> DB
+  ANL --> DB
+  INB --> DB

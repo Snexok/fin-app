@@ -1,0 +1,35 @@
+sequenceDiagram
+  autonumber
+  actor U as Пользователь
+  participant C as Веб / бот
+  participant R as POST /api/chat
+  participant RL as rate-limit (Postgres)
+  participant CO as coach.answer
+  participant L as LLM (если ключ)
+  participant P as parse.ts (regex)
+  participant FS as finance-service
+  participant E as engine (копейки)
+  participant DB as Postgres
+  U->>C: «Можно купить наушники за 15 000?»
+  C->>R: JSON + cookie mozhno_sid + Origin
+  R->>R: assertSameOrigin, readJson ≤16 КБ
+  R->>DB: сессия по sha256(токена)
+  R->>RL: chat 30/мин, 500/сутки
+  R->>CO: answer(userId, текст)
+  CO->>FS: getForecast(userId)
+  FS->>DB: books, occurrences, ledger, goals
+  FS->>E: forecast()
+  alt LLM_API_KEY / OPENAI_API_KEY задан
+    CO->>L: parseIntentLLM (таймаут 8 с, только намерение и текст суммы)
+    L-->>CO: intent, item, priceText
+    CO->>P: сверка: сумма должна быть в исходном тексте
+  else ключа нет или ошибка
+    CO->>P: parseIntentRegex
+  end
+  CO->>FS: simulate(item, priceMinor)
+  FS->>E: simulatePurchase: сейчас / после дохода / альтернативы
+  FS->>DB: INSERT decisions (finance_version не меняется)
+  CO->>DB: analytics: purchase_asked, purchase_result{verdict, engine}
+  CO-->>R: reply (шаблон из чисел движка) + simulation + meta
+  R-->>C: 200 JSON, Cache-Control: no-store
+  C-->>U: «Похоже, можно… останется …, около … в день»

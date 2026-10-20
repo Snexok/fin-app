@@ -1,0 +1,23 @@
+flowchart LR
+  user(["Пользователь<br/>20-35 лет"])
+  team(["Команда<br/>(внутренний дашборд)"])
+  subgraph mozhno["Можно? (Next.js 15 на Vercel)"]
+    web["Веб-приложение<br/>mozhno-mvp.vercel.app"]
+    api["API /api/*<br/>Route Handlers"]
+    dash["/internal/analytics"]
+  end
+  tg["Telegram<br/>@sber_fin_app_bot + Mini App"]
+  db[("Postgres (Neon)<br/>DATABASE_URL")]
+  cron["Vercel Cron<br/>cleanup 03:00 UTC<br/>reminders 07:00 UTC"]
+  llm["LLM / STT провайдер<br/>OpenAI-совместимый API<br/>(опционально)"]
+  user -->|браузер| web
+  user -->|чат, голос| tg
+  tg -->|webhook /api/telegram| api
+  tg -->|Mini App iframe| web
+  api -->|sendMessage| tg
+  web --> api
+  api --> db
+  cron -->|Bearer CRON_SECRET| api
+  api -.->|если задан ключ| llm
+  team -->|admin cookie| dash
+  dash --> db

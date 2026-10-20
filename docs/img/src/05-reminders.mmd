@@ -1,0 +1,26 @@
+sequenceDiagram
+  autonumber
+  participant VC as Vercel Cron (07:00 UTC)
+  participant R as GET /api/cron/reminders
+  participant RM as reminders.runReminders
+  participant FS as getForecast (engine)
+  participant DB as Postgres
+  participant TG as Telegram Bot API
+  VC->>R: Authorization: Bearer CRON_SECRET
+  R->>R: safeEqual(secret), токен бота
+  R->>RM: mode=daily (или hourly при REMINDERS_RUNNER)
+  RM->>DB: пользователи с Telegram + reminder_settings
+  loop по пользователю
+    RM->>FS: прогноз, платежи, доход
+    RM->>RM: selectReminders: тихие часы, ≤1 в день, мягкие ≤2 за 7 дней
+    RM->>DB: INSERT reminder_log (claimed) — дедуп по дню
+    RM->>TG: sendMessage + inline-кнопки
+    alt успех
+      RM->>DB: status=sent, analytics reminder_sent
+    else 403 бот заблокирован
+      RM->>DB: blocked_at, reminder_disabled{reason: bot_blocked}
+    else ошибка
+      RM->>DB: status=failed
+    end
+  end
+  R-->>VC: {ok, users, sent, skipped, blocked, failed}
